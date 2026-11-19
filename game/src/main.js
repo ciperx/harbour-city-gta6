@@ -414,6 +414,8 @@ const hud = new HUD(hudCanvas);
 
 const police = new Police(city, vehicles);
 scene.add(police.group);
+// Vehicles must see police cruisers to collide with them during a pursuit.
+vehicles.policeUnits = police.units;
 police.onDamage = (amount) => {
   player.health = Math.max(0, player.health - amount);
 };

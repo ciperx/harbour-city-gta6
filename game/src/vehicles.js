@@ -75,6 +75,7 @@ const SMOKE_POOL = 28;
 const coneGeometry = new THREE.ConeGeometry(2.3, 10, 12, 1, true);
 coneGeometry.rotateX(-Math.PI / 2); // apex towards -Z
 coneGeometry.translate(0, 0.78, 7.1); // apex at 2.1 m, mouth at 12.1 m: a 10 m throw
+coneGeometry.userData.sharedGeometry = true;
 const coneMaterial = new THREE.MeshBasicMaterial({
   color: 0xfff0cd,
   transparent: true,
@@ -255,6 +256,7 @@ export function createCar({ color = 0xb9c3cc, police = false, headlights = true 
 
   const cone = headlights ? new THREE.Mesh(coneGeometry, coneMaterial) : null;
   if (cone) {
+    cone.userData.sharedGeometry = true;
     cone.renderOrder = 3;
     cone.frustumCulled = false;
     group.add(cone);
@@ -434,6 +436,7 @@ export class Vehicles {
     this.lastExit = null;
     this.smoke = [];
     this.smokeCursor = 0;
+    this.policeUnits = null; // live reference to police.units, wired by main after both exist
 
     this.trafficLights = new TrafficLights(city);
     this.group.add(this.trafficLights.group);
@@ -918,6 +921,36 @@ export class Vehicles {
       }
       car.speed *= 0.4;
       other.speed = Math.max(other.speed * 0.5, 0);
+    }
+
+    // Police cruisers are not in this.cars — they belong to the police system — so without this
+    // loop the player's car drove clean through a roadblock. Same radius, split between the two
+    // bodies so a ram shoves both, and the same bump cooldown so one hit does not pay out twice.
+    for (const unit of this.policeUnits || []) {
+      const p = unit && unit.mesh && unit.mesh.position;
+      if (!p) continue;
+      const ox = p.x - next.x;
+      const oz = p.z - next.z;
+      const d = Math.hypot(ox, oz);
+      if (d > 3.4 || d < 0.001) continue;
+      const push = ((3.4 - d) / d) * 0.5;
+      next.x -= ox * push;
+      next.z -= oz * push;
+      p.x += ox * push;
+      p.z += oz * push;
+      if (Math.abs(car.speed) > 9) {
+        this.spawnSmoke(
+          { x: (next.x + p.x) / 2, z: (next.z + p.z) / 2 },
+          3,
+          Math.min(1.1, Math.abs(car.speed) / 14),
+        );
+      }
+      car.speed *= 0.5;
+      unit.speed = Math.max(unit.speed * 0.5, 0);
+      if (Math.abs(car.speed) > 3 && this.bumpCooldown === 0) {
+        this.bumpCooldown = 0.8;
+        if (this.onBump) this.onBump(unit, car);
+      }
     }
 
     const limit = BOUNDS + 26;

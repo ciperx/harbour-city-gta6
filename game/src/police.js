@@ -177,8 +177,10 @@ export class Police {
   }
 
   #spawn(origin) {
-    const spot = this.#spawnPoint(origin);
-    if (!spot) return null;
+    // At most 2 + stars units per wave (max 7 at 5 stars), never more than 8 live at once.
+    if (this.units.length >= 8) return;
+    const pos = this.#pickSpawn(origin);
+    if (!pos) return;
 
     const mesh = createCar({ police: true, color: 0xe9edf4 });
     const unit = {
@@ -236,7 +238,11 @@ export class Police {
     this.group.remove(mesh);
     const held = mesh.userData.ownedMaterials;
     mesh.traverse((o) => {
-      if (o.geometry) o.geometry.dispose();
+      // Headlight cones reuse the module-level shared geometry in vehicles.js — disposing it
+      // would corrupt every other car still using that buffer.
+      if (o.geometry && !o.userData.sharedGeometry && !o.geometry.userData?.sharedGeometry) {
+        o.geometry.dispose();
+      }
     });
     // Bodies share one material across the fleet; only the per-unit siren materials are ours.
     if (Array.isArray(held)) {
