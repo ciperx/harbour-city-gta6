@@ -1,5 +1,6 @@
 # Harbour City
 
+> Full guide: [docs/PLAYBOOK.md](docs/PLAYBOOK.md) (controls, missions, wanted system, architecture, debug API, verification).
 A dusk city you can walk through, drive through and get chased through. Three.js, hand-built
 procedural geometry, no assets to download: every facade, road, palm and lamp in `game/` is
 generated from code at load time, and the whole thing is one HTML page plus nine ES modules.
