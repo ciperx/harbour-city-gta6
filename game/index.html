@@ -182,22 +182,40 @@
     color: rgba(111, 214, 255, 0.4);
   }
 
-  .missions {
-    margin: 22px auto 0;
-    max-width: 44ch;
-    font-size: 12px;
-    line-height: 1.65;
-    color: rgba(255, 179, 71, 0.66);
+  .briefs {
+    margin: 24px auto 0;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    text-align: left;
   }
 
-  .missions b {
+  .brief {
+    padding: 12px 14px;
+    border-radius: 12px;
+    border: 1px solid rgba(255, 179, 71, 0.18);
+    background: rgba(255, 179, 71, 0.05);
+    font-size: 11.5px;
+    line-height: 1.55;
+    color: rgba(255, 214, 170, 0.7);
+  }
+
+  .brief.wanted {
+    border-color: rgba(255, 96, 78, 0.26);
+    background: rgba(255, 74, 60, 0.07);
+    color: rgba(255, 200, 188, 0.76);
+  }
+
+  .brief b {
     display: block;
-    margin-bottom: 4px;
+    margin-bottom: 5px;
     font-size: 10px;
     letter-spacing: 0.24em;
     text-transform: uppercase;
-    color: rgba(255, 203, 130, 0.92);
+    color: rgba(255, 203, 130, 0.95);
   }
+
+  .brief.wanted b { color: rgba(255, 138, 118, 0.95); }
 
   @media (max-width: 520px) {
     .panel { padding: 30px 20px 26px; border-radius: 16px; }
@@ -215,21 +233,29 @@
       <div class="kicker">Dusk District &middot; Sector 9</div>
       <h1>HARBOUR CITY</h1>
       <div class="rule"></div>
-      <p class="sub">The sun has gone down behind the towers and the avenues are full of traffic. Walk the waterfront, take a car off the kerb, and run jobs for people who pay cash and ask nothing.</p>
+      <p class="sub">The sun has gone down behind the towers and the avenues are full of traffic. Take a car off the kerb, run four jobs for people who pay cash and ask nothing, and keep one eye on the mirror: this city counts your stars.</p>
       <button id="play" type="button">Play</button>
       <div class="controls">
         <span><kbd>WASD</kbd> move</span>
         <span><kbd>Shift</kbd> sprint</span>
         <span><kbd>Space</kbd> jump / brake</span>
-        <span><kbd>F</kbd> take a car</span>
+        <span><kbd>F</kbd> in / out of a car</span>
         <span><kbd>Click</kbd> fire</span>
         <span><kbd>Drag</kbd> orbit</span>
       </div>
-      <p class="missions">
-        <b>Four jobs, one beacon</b>
-        Hot Wire &middot; Docks Run &middot; Packages &middot; The Vault &mdash; follow the amber beam for the next one.
-        Every star you earn has to be shaken off, and 20 quiet seconds buys you one back.
-      </p>
+      <div class="briefs">
+        <div class="brief">
+          <b>Missions</b>
+          Four jobs on the amber beacon: Hot Wire, Docks Run, Packages, The Vault. Hot Wire pays
+          only when the lifted car is standing still inside the drop ring.
+        </div>
+        <div class="brief wanted">
+          <b>Wanted system</b>
+          Shots and shunts add heat. At two stars the radio sends two to four cars that ram you;
+          stay out of sight for twenty seconds and a star comes off, and at zero the street is
+          empty again. Red dots on the minimap are units.
+        </div>
+      </div>
       <div class="hint">Click play, then drag the city to look around</div>
     </div>
   </div>

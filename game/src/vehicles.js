@@ -44,6 +44,26 @@ function glowTexture() {
   return _glow;
 }
 
+// Smoke: a soft grey puff, deliberately softer and wider than the headlight glow so a tyre
+// cloud reads as vapour instead of another lamp.
+let _smoke = null;
+function smokeTexture() {
+  if (!_smoke) {
+    _smoke = new THREE.CanvasTexture(
+      radialCanvas(64, [
+        [0, 'rgba(255,255,255,0.9)'],
+        [0.42, 'rgba(255,255,255,0.34)'],
+        [0.72, 'rgba(255,255,255,0.09)'],
+        [1, 'rgba(255,255,255,0)'],
+      ]),
+    );
+    _smoke.colorSpace = THREE.SRGBColorSpace;
+  }
+  return _smoke;
+}
+
+const SMOKE_POOL = 28;
+
 // The cone hangs off the nose: apex at +2.1 m, mouth ten metres down the road.
 const coneGeometry = new THREE.ConeGeometry(2.3, 10, 12, 1, true);
 coneGeometry.rotateX(-Math.PI / 2); // apex towards -Z
@@ -192,9 +212,38 @@ export function createCar({ color = 0xb9c3cc, police = false, headlights = true 
   group.add(body);
 
   if (police) {
-    const bar = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.16, 0.34), policeBarMaterial);
-    bar.position.set(0, 1.6, -0.1);
-    group.add(bar);
+    // Two lenses on two materials, not one shared bar: the police system flashes every unit
+    // independently, and a material shared across the fleet would light all of them in lockstep.
+    const red = policeBarMaterial.clone();
+    red.color.copy(POLICE_BAR_RED);
+    red.emissive.copy(POLICE_BAR_RED);
+    red.emissiveIntensity = 9;
+    const blue = policeBarMaterial.clone();
+    blue.color.copy(POLICE_BAR_BLUE);
+    blue.emissive.copy(POLICE_BAR_BLUE);
+    blue.emissiveIntensity = 0.25;
+
+    const barRed = new THREE.Mesh(new THREE.BoxGeometry(0.54, 0.16, 0.34), red);
+    barRed.position.set(-0.29, 1.61, -0.1);
+    const barBlue = new THREE.Mesh(new THREE.BoxGeometry(0.54, 0.16, 0.34), blue);
+    barBlue.position.set(0.29, 1.61, -0.1);
+    group.add(barRed, barBlue);
+
+    // Halos plus one point light, so the bar throws colour onto the asphalt and the facades.
+    const redGlow = glowSprite(0xff2a1e, 3.2, 0.85);
+    redGlow.position.set(-0.3, 1.66, -0.1);
+    const blueGlow = glowSprite(0x2a6bff, 3.2, 0.06);
+    blueGlow.position.set(0.3, 1.66, -0.1);
+    group.add(redGlow, blueGlow);
+
+    const light = new THREE.PointLight(0xff2418, 14, 17, 2);
+    light.castShadow = false;
+    light.position.set(0, 2.05, -0.1);
+    group.add(light);
+
+    group.userData.siren = { red, blue, redGlow, blueGlow, light };
+    // Only these materials belong to this one car; the body shares the fleet material.
+    group.userData.ownedMaterials = [red, blue, redGlow.material, blueGlow.material];
   }
 
   const cone = headlights ? new THREE.Mesh(coneGeometry, coneMaterial) : null;
@@ -371,7 +420,13 @@ export class Vehicles {
     this.driving = null;
     this.prompt = null; // set when the player is close enough to take a car
     this.onBump = null; // (otherCar) => void, wired by main to the wanted system
+    this.onImpact = null; // (speed, what) => void, wired by main to heat and health
     this.bumpCooldown = 0;
+    this.impactCooldown = 0;
+    this.impacts = 0;
+    this.lastExit = null;
+    this.smoke = [];
+    this.smokeCursor = 0;
 
     this.trafficLights = new TrafficLights(city);
     this.group.add(this.trafficLights.group);
@@ -380,19 +435,29 @@ export class Vehicles {
     this.#buildParked(options.parked ?? 7);
     this.#buildTraffic(options.driving ?? 9);
     this.#buildHeadlights(4);
+    this.#buildSmoke();
   }
 
   // -- construction ---------------------------------------------------------------------
 
   #buildParked(count) {
     const palette = PALETTE;
-    for (let i = 0; i < count; i++) {
-      const axis = i % 2 === 0 ? 'z' : 'x';
+    let placed = 0;
+    let attempts = 0;
+    // Parked cars are placed by probing the road ahead of the spot first: a car nosed into a
+    // wall, or boxed in behind the fence at the end of an avenue, is a trap rather than a ride.
+    while (placed < count && attempts < count * 8) {
+      attempts++;
+      const axis = placed % 2 === 0 ? 'z' : 'x';
       const road = ROAD_COORDS[1 + Math.floor(Math.random() * (ROAD_COORDS.length - 2))];
       const dir = Math.random() > 0.5 ? 1 : -1;
       // Kerbside: just inside the road edge, nose pointing along the traffic direction.
       const offset = dir * (ROAD_WIDTH / 2 - 1.25);
       const t = -BOUNDS + 25 + Math.random() * (BOUNDS * 2 - 50);
+
+      const slot = this.#positionOf({ axis, road, dir, t, offset });
+      // The last pass accepts whatever it can get, so a crowded city still has cars in it.
+      if (attempts < count * 6 && this.clearAhead(slot, slot.heading, 26) < 14) continue;
 
       const mesh = createCar({ color: palette[Math.floor(Math.random() * palette.length)] });
       const car = {
@@ -411,6 +476,7 @@ export class Vehicles {
       this.#place(car);
       this.cars.push(car);
       this.group.add(mesh);
+      placed++;
     }
   }
 
@@ -450,6 +516,78 @@ export class Vehicles {
     }
   }
 
+  // -- smoke ----------------------------------------------------------------------------
+
+  #buildSmoke() {
+    for (let i = 0; i < SMOKE_POOL; i++) {
+      const sprite = new THREE.Sprite(
+        new THREE.SpriteMaterial({
+          map: smokeTexture(),
+          color: 0xc9ced7,
+          transparent: true,
+          opacity: 0,
+          depthWrite: false,
+          fog: true,
+        }),
+      );
+      sprite.visible = false;
+      sprite.renderOrder = 2;
+      this.group.add(sprite);
+      this.smoke.push({ sprite, life: 0, maxLife: 1, rise: 1, grow: 2, size: 0.6, strength: 1 });
+    }
+  }
+
+  /**
+   * A puff of tyre smoke at a point: used by a hard crash into a facade, a shove from another
+   * car, and by the police when they put a bumper in. Pooled and additive-free, so twenty of
+   * them cost nothing.
+   */
+  spawnSmoke(position, count = 3, strength = 1) {
+    if (!position) return;
+    const hold = THREE.MathUtils.clamp(strength, 0.2, 1.4);
+    for (let i = 0; i < count; i++) {
+      const puff = this.smoke[this.smokeCursor % this.smoke.length];
+      this.smokeCursor++;
+      const spread = 0.9;
+      puff.sprite.position.set(
+        position.x + (Math.random() - 0.5) * spread,
+        0.5 + Math.random() * 0.55,
+        position.z + (Math.random() - 0.5) * spread,
+      );
+      puff.sprite.visible = true;
+      puff.maxLife = 0.85 + Math.random() * 0.75;
+      puff.life = puff.maxLife;
+      puff.rise = 1.0 + Math.random() * 1.0;
+      puff.grow = 1.5 + Math.random() * 1.6;
+      puff.strength = hold;
+      puff.size = 0.55 + Math.random() * 0.45;
+      puff.sprite.scale.setScalar(puff.size);
+      puff.sprite.material.opacity = 0.5 * hold;
+    }
+  }
+
+  #updateSmoke(dt) {
+    for (const puff of this.smoke) {
+      if (puff.life <= 0) continue;
+      puff.life -= dt;
+      if (puff.life <= 0) {
+        puff.sprite.visible = false;
+        puff.sprite.material.opacity = 0;
+        continue;
+      }
+      const age = 1 - puff.life / puff.maxLife;
+      puff.sprite.position.y += puff.rise * dt;
+      puff.sprite.position.x += Math.sin(age * 4.2 + puff.maxLife * 3) * 0.22 * dt;
+      puff.sprite.scale.setScalar(puff.size * (1 + puff.grow * age));
+      puff.sprite.material.opacity = 0.5 * puff.strength * (1 - age) * (1 - age);
+    }
+  }
+
+  /** Count of puffs currently in the air, for stats(). */
+  get smokeCount() {
+    return this.smoke.reduce((n, p) => n + (p.life > 0 ? 1 : 0), 0);
+  }
+
   // -- placement ------------------------------------------------------------------------
 
   /** Lane position in world space for a car's current road parameter. */
@@ -464,6 +602,46 @@ export class Vehicles {
     car.mesh.position.set(p.x, 0, p.z);
     car.mesh.rotation.y = p.heading;
     car.heading = p.heading;
+  }
+
+  /**
+   * Metres of clear road in front of a point facing `heading`, capped at `maxMetres`. A probe
+   * every 2.5 m gives up on a facade, on the edge of the grid, or on another car parked in the
+   * way. This is what "a spot with room to pull out" means for a kerbside car.
+   */
+  clearAhead(position, heading, maxMetres = 26) {
+    const fx = Math.sin(heading);
+    const fz = Math.cos(heading);
+    const limit = BOUNDS + 16;
+    let clear = 0;
+    for (let d = 2.5; d <= maxMetres; d += 2.5) {
+      const x = position.x + fx * d;
+      const z = position.z + fz * d;
+      if (Math.abs(x) > limit || Math.abs(z) > limit) break;
+
+      let hit = false;
+      for (const b of this.city.buildings) {
+        if (b.top < 0.6) continue;
+        if (x > b.x0 - 1.3 && x < b.x1 + 1.3 && z > b.z0 - 1.3 && z < b.z1 + 1.3) {
+          hit = true;
+          break;
+        }
+      }
+      if (!hit) {
+        for (const other of this.cars) {
+          if (other.occupied) continue;
+          const dx = other.mesh.position.x - x;
+          const dz = other.mesh.position.z - z;
+          if (dx * dx + dz * dz < 3.4 * 3.4) {
+            hit = true;
+            break;
+          }
+        }
+      }
+      if (hit) break;
+      clear = d;
+    }
+    return clear;
   }
 
   // -- simulation -----------------------------------------------------------------------
@@ -514,18 +692,28 @@ export class Vehicles {
     this.#place(car);
   }
 
-  /** Find a car the player can get into: parked, or stopped in traffic. */
+  /**
+   * Find a car the player can get into. Closest wins, but a parked car sitting on a road with
+   * room in front of it beats a boxed-in one or a car idling in traffic: the point of taking a
+   * car is to be able to drive away in it.
+   */
   nearest(position, maxDistance = 3.8) {
     let best = null;
-    let bestDist = maxDistance;
+    let bestScore = Infinity;
     for (const car of this.cars) {
       if (car.occupied) continue;
       if (car.kind === 'traffic' && car.speed > 1.8) continue;
       const dx = car.mesh.position.x - position.x;
       const dz = car.mesh.position.z - position.z;
       const d = Math.hypot(dx, dz);
-      if (d < bestDist) {
-        bestDist = d;
+      if (d > maxDistance) continue;
+
+      const run = this.clearAhead(car.mesh.position, car.heading, 30);
+      let score = d;
+      if (car.kind !== 'parked') score += 3.5; // a kerbside car is the intended way out
+      score += Math.max(0, 24 - run) * 0.55; // and only if it has road in front of it
+      if (score < bestScore) {
+        bestScore = score;
         best = car;
       }
     }
@@ -542,19 +730,59 @@ export class Vehicles {
     return true;
   }
 
+  /**
+   * Get out beside the driver's door: 1.55 m clear of the sill on the driver's side, and if that
+   * is a wall, the passenger door, then the rear. The car is left where it stands and stops
+   * being traffic, so it does not drive off on its own the moment the door shuts.
+   */
   exit(playerPosition) {
     const car = this.driving;
     if (!car) return null;
     car.occupied = false;
     this.driving = null;
-
-    // Step out on the driver's side, clear of the bodywork.
-    const side = car.heading + Math.PI / 2;
-    const x = car.mesh.position.x + Math.sin(side) * 2.1;
-    const z = car.mesh.position.z + Math.cos(side) * 2.1;
-    playerPosition.set(x, this.city.groundAt(x, z), z);
     car.speed = 0;
+    if (car.mesh.userData.headGlow) car.mesh.userData.headGlow.material.opacity = 0.75;
+
+    const heading = car.heading;
+    const base = car.mesh.position;
+    // Door side first, then a ring of twelve bearings at two reaches: a car jammed nose-first
+    // into a facade still has to let the driver out somewhere that is not inside a wall.
+    const candidates = [
+      [heading + Math.PI / 2, 1.55], // driver's door, left-hand drive
+      [heading - Math.PI / 2, 1.55], // passenger door
+      [heading + Math.PI, 2.7], // behind the boot
+      [heading, 3.1], // in front of the bonnet
+    ];
+    for (const reach of [2.4, 3.2]) {
+      for (let i = 0; i < 12; i++) candidates.push([heading + (Math.PI / 6) * i, reach]);
+    }
+
+    let step = null;
+    for (const [angle, reach] of candidates) {
+      const x = base.x + Math.sin(angle) * reach;
+      const z = base.z + Math.cos(angle) * reach;
+      if (Math.abs(x) > BOUNDS + 6 || Math.abs(z) > BOUNDS + 6) continue;
+      if (this.#insideBuilding(x, z, 0.55)) continue;
+      step = { x, z };
+      break;
+    }
+    // Nothing clear within 3.2 m: stand at the car rather than inside the nearest wall.
+    if (!step) step = { x: base.x, z: base.z };
+
+    playerPosition.set(step.x, this.city.groundAt(step.x, step.z), step.z);
+    this.lastExit = { x: step.x, z: step.z, heading };
+    // An abandoned car stays put: it stops being traffic and becomes scenery.
+    if (car.kind === 'traffic') car.kind = 'parked';
     return car;
+  }
+
+  /** Is this point inside a building footprint, with `pad` metres of clearance? */
+  #insideBuilding(x, z, pad = 0) {
+    for (const b of this.city.buildings) {
+      if (b.top < 0.6) continue;
+      if (x > b.x0 - pad && x < b.x1 + pad && z > b.z0 - pad && z < b.z1 + pad) return true;
+    }
+    return false;
   }
 
   // -- player driving -------------------------------------------------------------------
@@ -593,6 +821,8 @@ export class Vehicles {
     // the two axles keep both ends out of the wall and still leave room to park 1.25 m from it.
     const R = 1.0;
     const AXLE = 1.15;
+    const impactSpeed = Math.abs(car.speed);
+    let scraped = false;
     for (const b of this.city.buildings) {
       if (b.top < 0.6) continue;
       for (const s of [AXLE, -AXLE]) {
@@ -609,6 +839,7 @@ export class Vehicles {
           const midZ = (b.z0 + b.z1) / 2;
           next.z += (pz > midZ ? 1 : -1) * (R + 0.02);
           car.speed *= 0.35;
+          scraped = true;
           continue;
         }
         const d = Math.sqrt(d2);
@@ -616,11 +847,14 @@ export class Vehicles {
         next.x += dx * push;
         next.z += dz * push;
         car.speed *= 0.6;
+        scraped = true;
       }
     }
 
+    // A wall hit at speed: a cloud off the nose, and the caller hears about it (heat, damage).
+    if (scraped && impactSpeed > 8) this.#crash(car, impactSpeed);
+
     // Other cars: a nudge, not a physics engine.
-    this.bumpCooldown = Math.max(0, this.bumpCooldown - dt);
     for (const other of this.cars) {
       if (other === car) continue;
       const ox = other.mesh.position.x - next.x;
@@ -632,6 +866,14 @@ export class Vehicles {
       next.z -= oz * push;
       if (Math.abs(car.speed) > 3 && this.bumpCooldown === 0) {
         this.bumpCooldown = 0.8;
+        // A hard shunt smokes at the point of contact; a gentle nudge does not.
+        if (Math.abs(car.speed) > 9) {
+          this.spawnSmoke(
+            { x: (next.x + other.mesh.position.x) / 2, z: (next.z + other.mesh.position.z) / 2 },
+            3,
+            Math.min(1.1, Math.abs(car.speed) / 14),
+          );
+        }
         if (this.onBump) this.onBump(other, car);
       }
       car.speed *= 0.4;
@@ -653,8 +895,26 @@ export class Vehicles {
     );
   }
 
+  /** A hard hit into a facade: smoke off the nose and a call out to whatever owns the damage. */
+  #crash(car, speed) {
+    if (this.impactCooldown > 0) return;
+    this.impactCooldown = 0.5;
+    this.impacts++;
+    const fx = Math.sin(car.heading);
+    const fz = Math.cos(car.heading);
+    const strength = Math.min(1.3, speed / 13);
+    this.spawnSmoke(
+      { x: car.mesh.position.x + fx * 1.9, z: car.mesh.position.z + fz * 1.9 },
+      Math.min(6, 2 + Math.round(speed / 6)),
+      strength,
+    );
+    if (this.onImpact) this.onImpact(speed, 'building');
+  }
+
   update(dt, playerPosition, input = null) {
     this.trafficLights.update(dt);
+    this.bumpCooldown = Math.max(0, this.bumpCooldown - dt);
+    this.impactCooldown = Math.max(0, this.impactCooldown - dt);
 
     for (const car of this.cars) {
       if (car === this.driving) continue;
@@ -663,6 +923,7 @@ export class Vehicles {
 
     if (this.driving) this.#stepPlayerCar(this.driving, input || { forward: 0, strafe: 0 }, dt);
 
+    this.#updateSmoke(dt);
     this.#updateHeadlights(playerPosition);
   }
 
@@ -701,14 +962,18 @@ export class Vehicles {
 
   stats() {
     const traffic = this.cars.filter((c) => c.kind === 'traffic').length;
+    const parked = this.cars.filter((c) => c.kind === 'parked').length;
     return {
       cars: this.cars.length,
       traffic,
-      parked: this.cars.filter((c) => c.kind === 'parked').length,
+      parked,
       headlights: this.headlights.length,
       driving: Boolean(this.driving),
       speed: Number(this.speed.toFixed(2)),
       signal: this.trafficLights.stateFor('z'),
+      clearAhead: this.driving ? this.clearAhead(this.driving.mesh.position, this.driving.heading, 30) : 0,
+      smoke: this.smokeCount,
+      impacts: this.impacts,
     };
   }
 }

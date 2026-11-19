@@ -33,6 +33,11 @@ export class Player {
     this.money = 4820;
     this.animPhase = 0;
     this.city = city;
+    // Landing feedback: the fastest fall since the feet left the ground, and how deep the knees
+    // are still bent from the last touchdown.
+    this.fallSpeed = 0;
+    this.landDip = 0;
+    this.onLand = null; // (impactSpeed) => void, wired by main to health
 
     this.#build();
 
@@ -142,6 +147,7 @@ export class Player {
     const forward = input.forward || 0;
     const strafe = input.strafe || 0;
     const sprinting = Boolean(input.sprint) && (forward !== 0 || strafe !== 0);
+    const wasGrounded = this.grounded;
 
     // Camera-relative desired direction.
     const sin = Math.sin(cameraYaw);
@@ -208,6 +214,19 @@ export class Player {
       this.grounded = false;
     }
 
+    // Touchdown: a rooftop drop bends the knees and, past about four metres, costs health. The
+    // fall is measured at its fastest, not at the final frame, so a landing on a kerb still counts.
+    if (!this.grounded) {
+      this.fallSpeed = Math.min(this.fallSpeed, this.velocity.y);
+    } else if (!wasGrounded) {
+      const impact = Math.max(0, -this.fallSpeed);
+      this.fallSpeed = 0;
+      if (impact > 4) {
+        this.landDip = Math.min(0.36, impact * 0.022);
+        if (this.onLand) this.onLand(impact);
+      }
+    }
+
     // Keep the player on the map: no swimming.
     const limit = 232;
     this.position.x = THREE.MathUtils.clamp(this.position.x, -limit, limit);
@@ -230,10 +249,11 @@ export class Player {
   /** Push the capsule out of any building box it overlaps, along the shallower axis. */
   #resolveHorizontal(city) {
     const feet = this.position.y;
-    const headY = this.position.y + HEIGHT;
     for (const b of city.buildings) {
       if (feet >= b.top - 0.06) continue; // standing on this roof
-      if (headY <= 0) continue;
+      // Anything whose top is below mid-shin is a step, not a wall: groundAt lifts the feet over
+      // it, so it must not also shove the body sideways.
+      if (b.top <= feet + 0.35) continue;
       const x0 = b.x0 - RADIUS;
       const x1 = b.x1 + RADIUS;
       const z0 = b.z0 - RADIUS;
@@ -270,10 +290,12 @@ export class Player {
     const swing = Math.sin(this.animPhase) * amp;
     const swing2 = Math.sin(this.animPhase + Math.PI) * amp;
 
-    // In the air the legs tuck instead of cycling.
+    // In the air the legs tuck instead of cycling; a fresh landing folds both knees.
     const air = this.grounded ? 0 : 1;
-    const targetLegL = this.grounded ? swing : -0.55;
-    const targetLegR = this.grounded ? swing2 : 0.35;
+    this.landDip *= Math.exp(-7 * dt);
+    const crouch = this.grounded ? this.landDip * 1.6 : 0;
+    const targetLegL = (this.grounded ? swing : -0.55) + crouch;
+    const targetLegR = (this.grounded ? swing2 : 0.35) + crouch;
     const targetArmL = this.grounded ? swing2 * 0.9 : -0.9;
     const targetArmR = this.grounded ? swing * 0.9 : -0.9;
 
@@ -284,9 +306,10 @@ export class Player {
     this.armL.rotation.z = 0.06 + air * 0.12;
     this.armR.rotation.z = -0.06 - air * 0.12;
 
-    // Bob and a slight lean into the run.
+    // Bob and a slight lean into the run; a fresh landing pulls the whole body down for a beat
+    // and lets it spring back, so a drop off a roof reads in the body as well as the health bar.
     const bob = moving ? Math.abs(Math.sin(this.animPhase)) * 0.045 : 0;
-    this.group.position.y = this.position.y + bob;
+    this.group.position.y = this.position.y + bob - this.landDip;
     this.head.rotation.x = this.grounded ? -0.02 - this.speed * 0.008 : 0.06;
     this.group.rotation.z = -(this.velocity.x * Math.cos(this.yaw) - this.velocity.z * Math.sin(this.yaw)) * 0.006;
   }

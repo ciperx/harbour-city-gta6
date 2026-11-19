@@ -304,17 +304,38 @@ const MISSIONS = [
     begin(m) {
       const drop = new THREE.Vector3(ROAD_COORDS[6], 0, BOUNDS - 22);
       m.drop = drop;
+      m.delivered = false;
       m.setMarker(drop);
       m.objectiveLine = 'HOT WIRE: take any car with F';
     },
     tick(m, dt, ctx) {
+      const d = m.where(ctx).distanceTo(m.drop);
+
+      // The job is the car, not a walk to a pin. On foot the marker pays nothing, and stepping
+      // out inside the ring only tells the player to get back behind the wheel.
       if (!ctx.car) {
-        m.objectiveLine = 'HOT WIRE: take any car with F';
+        m.objectiveLine =
+          d < 12
+            ? 'HOT WIRE: get back in the car and roll it into the ring'
+            : 'HOT WIRE: take any car with F';
         return;
       }
-      m.objectiveLine = 'HOT WIRE: deliver the car to the marker';
-      const d = m.where(ctx).distanceTo(m.drop);
-      if (d < 11) m.complete(ctx, 2500);
+
+      if (d > 9) {
+        m.objectiveLine = d < 22 ? `HOT WIRE: ease it into the ring — ${d.toFixed(0)} m` : 'HOT WIRE: deliver the car to the marker';
+        return;
+      }
+
+      // Inside the ring: the car has to be brought to a stop. Rolling through at speed, or
+      // stopping short of the pin, leaves the job unpaid.
+      if (Math.abs(ctx.car.speed) > 4.5) {
+        m.objectiveLine = 'HOT WIRE: stop the car inside the ring';
+        return;
+      }
+
+      m.delivered = true;
+      m.objectiveLine = 'HOT WIRE: car delivered';
+      m.complete(ctx, 2500);
     },
   },
   {

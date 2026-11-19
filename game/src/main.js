@@ -403,6 +403,20 @@ vehicles.onBump = () => {
   police.addHeat(0.35, 'Traffic collision');
 };
 
+// A wall hit at speed costs blood as well as paint; the fleet already smoked the nose.
+vehicles.onImpact = (speed, what) => {
+  if (what !== 'building' || speed <= 12) return;
+  player.health = Math.max(0, player.health - (speed - 12) * 1.6);
+  police.addHeat(0.12, 'Hit a wall');
+};
+
+// A rooftop drop on foot: the knees take anything over four metres, health anything over ten.
+player.onLand = (impact) => {
+  if (impact <= 10) return;
+  player.health = Math.max(0, player.health - (impact - 10) * 3.2);
+  police.addHeat(0.05, 'Fell off a roof');
+};
+
 // --- input -----------------------------------------------------------------------------
 
 const keys = new Set();
@@ -425,6 +439,8 @@ function enterNearestCar(radius) {
   if (!car) return null;
   vehicles.enter(car);
   player.velocity.set(0, 0, 0);
+  player.speed = 0;
+  player.yaw = car.heading;
   player.group.visible = false;
   orbit.targetDistance = 9;
   orbit.yaw = car.heading;
@@ -436,8 +452,15 @@ function enterNearestCar(radius) {
 function toggleCar() {
   if (!state.started) return;
   if (vehicles.driving) {
+    const car = vehicles.driving;
+    const heading = car.heading;
+    // Out beside the door, facing away from the car: the exit point comes back from the fleet
+    // as the first clear spot beside the sill (driver's door, then passenger, then the boot).
     vehicles.exit(player.position);
+    player.yaw = heading + Math.PI / 2;
+    player.group.rotation.y = player.yaw;
     player.velocity.set(0, 0, 0);
+    player.speed = 0;
     player.group.visible = true;
     player.position.y = city.groundAt(player.position.x, player.position.z);
     orbit.targetDistance = 9;
@@ -555,7 +578,8 @@ function step(dt) {
 
   police.update(dt, { playerPosition: player.position, car: vehicles.driving });
   missions.update(dt, { player, vehicles, police, car: vehicles.driving });
-  peds.update(dt);
+  // The street reads the stars: from three up, everyone within earshot runs from the player.
+  peds.update(dt, { playerPosition: player.position, wanted: police.stars });
 
   // Camera target: the car when driving, the eyes when walking.
   if (vehicles.driving) {
@@ -642,6 +666,26 @@ let fpsAccum = 0;
 let fpsFrames = 0;
 let promptCar = null;
 
+/** Everything the HUD draws, read off the live world once per frame. */
+function refreshHud(dt) {
+  hud.update(dt, {
+    health: player.health,
+    money: player.money,
+    speed: vehicles.driving ? vehicles.speed : player.speed,
+    inCar: Boolean(vehicles.driving),
+    yaw: vehicles.driving ? vehicles.driving.heading : player.yaw,
+    x: player.position.x,
+    z: player.position.z,
+    wanted: police.stars,
+    wantedHeat: police.heat,
+    objective: missions.objective,
+    message: missions.messageFor > 0 ? missions.message : '',
+    prompt: vehicles.driving ? 'F to get out' : promptCar ? 'F to take this car' : '',
+    marker: missions.marker.visible ? { x: missions.marker.position.x, z: missions.marker.position.z } : null,
+    police: police.units.map((u) => ({ x: u.mesh.position.x, z: u.mesh.position.z })),
+  });
+}
+
 function frame(now) {
   requestAnimationFrame(frame);
 
@@ -663,21 +707,7 @@ function frame(now) {
 
   promptCar = state.started && !vehicles.driving ? vehicles.nearest(player.position, 4.0) : null;
 
-  hud.update(dt, {
-    health: player.health,
-    money: player.money,
-    speed: vehicles.driving ? vehicles.speed : player.speed,
-    inCar: Boolean(vehicles.driving),
-    yaw: vehicles.driving ? vehicles.driving.heading : player.yaw,
-    x: player.position.x,
-    z: player.position.z,
-    wanted: police.stars,
-    objective: missions.objective,
-    message: missions.messageFor > 0 ? missions.message : '',
-    prompt: vehicles.driving ? 'F to get out' : promptCar ? 'F to take this car' : '',
-    marker: missions.marker.visible ? { x: missions.marker.position.x, z: missions.marker.position.z } : null,
-    police: police.units.map((u) => u.mesh.position),
-  });
+  refreshHud(dt);
 
   renderer.render(scene, camera);
 
@@ -764,13 +794,13 @@ window.game = {
     if (!state.started) start();
     return enterNearestCar(40);
   },
-  /** Set the wanted level outright: n stars, with the units that answer them on the next tick. */
+  /** Set the wanted level outright: the wave answering it is on the street before this returns. */
   wanted(n) {
     const level = THREE.MathUtils.clamp(Math.round(Number(n) || 0), 0, 5);
-    police.clear(); // no leftovers from a previous chase
-    police.heat = level;
-    police.escapedFor = 0;
-    police.spawnTimer = 0;
+    if (!state.started) start();
+    // Not queued for the next tick: 2-4 cars are placed inside the sixty-metre ring right here,
+    // and wanted(0) clears the street on the spot.
+    police.setWanted(level, player.position);
     return police.stars;
   },
   /** Start mission i (0 is HOT WIRE). Out-of-range indices are ignored. */
@@ -799,6 +829,19 @@ window.game = {
   renderOnce() {
     renderer.render(scene, camera);
     return renderer.info.render.calls;
+  },
+  /**
+   * Run the sim forward by hand: fixed steps, no waiting on a frame. A hidden tab never gets
+   * requestAnimationFrame, and a deterministic clock is also what a screenshot run wants.
+   */
+  advance(seconds = 1) {
+    if (!state.started) start();
+    const count = Math.max(1, Math.min(3600, Math.round((Number(seconds) || 0) / FIXED_STEP)));
+    for (let i = 0; i < count; i++) step(FIXED_STEP);
+    promptCar = state.started && !vehicles.driving ? vehicles.nearest(player.position, 4.0) : null;
+    refreshHud(FIXED_STEP);
+    renderer.render(scene, camera);
+    return count;
   },
   stats() {
     const info = renderer.info;
@@ -836,6 +879,7 @@ window.game = {
       },
       vehicles: vehicles.stats(),
       police: police.stats(),
+      wanted: police.stars,
       missions: missions.stats(),
       peds: peds.stats(),
       started: state.started,

@@ -18,7 +18,7 @@ function money(n) {
   return `$${Math.round(n).toLocaleString('en-US')}`;
 }
 
-function star(ctx, cx, cy, r, filled) {
+function star(ctx, cx, cy, r, filled, glow = 'rgba(255, 179, 71, 0.9)', fill = '#ffd98a') {
   ctx.beginPath();
   for (let i = 0; i < 10; i++) {
     const rad = i % 2 === 0 ? r : r * 0.44;
@@ -30,8 +30,8 @@ function star(ctx, cx, cy, r, filled) {
   }
   ctx.closePath();
   if (filled) {
-    ctx.fillStyle = '#ffd98a';
-    ctx.shadowColor = 'rgba(255, 179, 71, 0.9)';
+    ctx.fillStyle = fill;
+    ctx.shadowColor = glow;
     ctx.shadowBlur = 10;
     ctx.fill();
     ctx.shadowBlur = 0;
@@ -57,6 +57,7 @@ export class HUD {
       x: 0,
       z: 0,
       wanted: 0,
+      wantedHeat: 0,
       objective: '',
       message: '',
       inCar: false,
@@ -96,6 +97,7 @@ export class HUD {
     ctx.clearRect(0, 0, this.width, this.height);
 
     this.#drawVignette(ctx);
+    this.#drawPursuit(ctx);
     this.#drawHealth(ctx);
     this.#drawMoney(ctx);
     this.#drawWanted(ctx);
@@ -188,30 +190,92 @@ export class HUD {
     ctx.restore();
   }
 
-  /** Five stars over the objective, so the police state is the first thing you read. */
+  /**
+   * Five stars over the objective. Clean, they are five faint outlines nobody reads; wanted, they
+   * grow, sit on a red panel that pulses with the heat, and carry the unit count underneath.
+   */
   #drawWanted(ctx) {
     const stars = Math.max(0, Math.min(5, this.state.wanted || 0));
     const cx = this.width / 2;
-    const y = 30;
-    const gap = 22;
-    const startX = cx - (gap * 4) / 2;
+
+    if (stars <= 0) {
+      for (let i = 0; i < 5; i++) star(ctx, cx - 44 + i * 22, 30, 6.6, false);
+      return;
+    }
+
+    const heat = Math.max(0, Math.min(5, this.state.wantedHeat || stars));
+    const pulse = 0.65 + 0.35 * Math.sin(this.time * (4 + heat * 0.8));
+    const w = 258;
+    const h = 50;
+    const px = cx - w / 2;
+    const py = 12;
 
     ctx.save();
-    if (stars > 0) {
-      ctx.textAlign = 'center';
-      ctx.font = `600 9px ${MONO}`;
-      ctx.fillStyle = 'rgba(255, 217, 138, 0.75)';
-      ctx.fillText('WANTED', cx, y - 16);
+    this.#roundRect(ctx, px, py, w, h, 13);
+    ctx.fillStyle = `rgba(34, 7, 11, ${0.52 + 0.2 * pulse})`;
+    ctx.fill();
+    ctx.strokeStyle = `rgba(255, 74, 60, ${0.34 + 0.42 * pulse})`;
+    ctx.lineWidth = 1.4;
+    ctx.shadowColor = 'rgba(255, 52, 40, 0.8)';
+    ctx.shadowBlur = 16 + 12 * pulse;
+    this.#roundRect(ctx, px, py, w, h, 13);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    ctx.textAlign = 'left';
+    ctx.font = `700 11px ${MONO}`;
+    ctx.fillStyle = `rgba(255, 158, 140, ${0.78 + 0.22 * pulse})`;
+    ctx.fillText('WANTED', px + 16, py + 21);
+
+    const units = (this.state.police || []).length;
+    ctx.font = `600 9px ${MONO}`;
+    ctx.fillStyle = 'rgba(255, 214, 204, 0.52)';
+    ctx.fillText(units ? `${units} UNIT${units === 1 ? '' : 'S'}` : 'NO UNITS', px + 16, py + 36);
+
+    const starY = py + h / 2 + 2;
+    const gap = 28;
+    const startX = px + w - 24 - gap * 4;
+    for (let i = 0; i < 5; i++) {
+      const on = i < stars;
+      star(
+        ctx,
+        startX + i * gap,
+        starY,
+        11 + (on ? 1.6 * pulse : 0),
+        on,
+        'rgba(255, 80, 60, 0.95)',
+        '#ffe6a8',
+      );
     }
-    for (let i = 0; i < 5; i++) star(ctx, startX + i * gap, y, 7.6, i < stars);
     ctx.restore();
+  }
+
+  /** A red pulse round the frame once the chase is serious, so the state is felt, not just read. */
+  #drawPursuit(ctx) {
+    const stars = Math.max(0, Math.min(5, this.state.wanted || 0));
+    if (stars < 3) return;
+    const pulse = 0.5 + 0.5 * Math.sin(this.time * (5 + stars));
+    const strength = ((stars - 2) / 3) * (0.16 + 0.14 * pulse);
+    const g = ctx.createRadialGradient(
+      this.width / 2,
+      this.height / 2,
+      Math.min(this.width, this.height) * 0.3,
+      this.width / 2,
+      this.height / 2,
+      Math.max(this.width, this.height) * 0.62,
+    );
+    g.addColorStop(0, 'rgba(255, 40, 30, 0)');
+    g.addColorStop(1, `rgba(255, 36, 26, ${strength.toFixed(3)})`);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, this.width, this.height);
   }
 
   #drawObjective(ctx) {
     const cx = this.width / 2;
     const objective = this.state.objective || '';
     const message = this.state.message || '';
-    let y = 58;
+    // The wanted panel owns the top of the screen while it is up, so the objective drops below it.
+    let y = this.state.wanted > 0 ? 84 : 58;
 
     ctx.save();
     ctx.textAlign = 'center';
@@ -377,23 +441,61 @@ export class HUD {
     ctx.fillStyle = 'rgba(255, 179, 71, 0.85)';
     ctx.fillRect(sx(lc) - 2.5, sy(lc) - 2.5, 5, 5);
 
-    // the mission marker, pulsing
+    // the mission marker: filled core, breathing ring and four spokes, so it never gets lost
+    // against the roads drawn under it
     const marker = this.state.marker;
     if (marker) {
-      const pulse = 4 + Math.sin(this.time * 4) * 2;
+      const mx = sx(marker.x);
+      const mz = sy(marker.z);
+      const pulse = 5 + Math.sin(this.time * 4) * 2;
+
       ctx.beginPath();
-      ctx.arc(sx(marker.x), sy(marker.z), pulse, 0, Math.PI * 2);
+      ctx.arc(mx, mz, pulse, 0, Math.PI * 2);
       ctx.strokeStyle = 'rgba(255, 179, 71, 0.95)';
-      ctx.lineWidth = 1.6;
+      ctx.lineWidth = 1.8;
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(mx, mz, 2.6, 0, Math.PI * 2);
+      ctx.fillStyle = '#ffd79a';
+      ctx.shadowColor = 'rgba(255, 179, 71, 0.95)';
+      ctx.shadowBlur = 8;
+      ctx.fill();
+      ctx.shadowBlur = 0;
+
+      ctx.strokeStyle = 'rgba(255, 196, 110, 0.55)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (const [dx, dz] of [
+        [1, 0],
+        [-1, 0],
+        [0, 1],
+        [0, -1],
+      ]) {
+        ctx.moveTo(mx + dx * (pulse - 2), mz + dz * (pulse - 2));
+        ctx.lineTo(mx + dx * (pulse + 2.5), mz + dz * (pulse + 2.5));
+      }
       ctx.stroke();
     }
 
-    // police units
+    // police units: red, blinking, ringed, and drawn last so they sit on top of the map
+    const blink = 0.5 + 0.5 * Math.sin(this.time * 8.5);
     for (const unit of this.state.police || []) {
+      const ux = sx(unit.x);
+      const uz = sy(unit.z);
       ctx.beginPath();
-      ctx.arc(sx(unit.x), sy(unit.z), 2.2, 0, Math.PI * 2);
-      ctx.fillStyle = '#6fa8ff';
+      ctx.arc(ux, uz, 5.6, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(255, 118, 100, ${0.2 + 0.4 * blink})`;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(ux, uz, 3.2, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(255, 58, 46, ${0.55 + 0.45 * blink})`;
+      ctx.shadowColor = 'rgba(255, 54, 40, 0.95)';
+      ctx.shadowBlur = 9;
       ctx.fill();
+      ctx.shadowBlur = 0;
     }
 
     // player arrow: forward is (sin yaw, cos yaw) in world XZ, which is (right, down) here

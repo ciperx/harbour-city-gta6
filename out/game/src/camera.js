@@ -110,6 +110,11 @@ export class OrbitCamera {
     this.coverage = 0;
     this.usedPitch = this._pitch;
     this.collide = options.collide ?? true;
+    // A touch of speed: the lens opens as the car gets up to pace and settles again on foot. The
+    // base is whatever the scene was built with, so a different starting FOV still works.
+    this.baseFov = camera.fov;
+    this._fov = this.baseFov;
+    this.fovKick = 0;
 
     this._pointerId = null;
     this._lastX = 0;
@@ -376,9 +381,21 @@ export class OrbitCamera {
     this.targetPitch = THREE.MathUtils.clamp(this.targetPitch + dpitch, MIN_PITCH, MAX_PITCH);
   }
 
-  update(dt, target, city = null, lookAhead = null) {
+  update(dt, target, city = null, lookAhead = null, speed = 0) {
     const step = Math.min(dt, 0.1);
     const walls = this.collide ? city : null;
+
+    // Speed widens the lens: 0 on foot, 1 at about forty metres per second. Eased on a slow
+    // spring so a hard brake does not snap the frame, and the projection is only rebuilt when
+    // the angle actually moved.
+    const wantedKick = THREE.MathUtils.clamp(Math.abs(speed) / 40, 0, 1) * 9;
+    this.fovKick += (wantedKick - this.fovKick) * (1 - Math.exp(-3.2 * step));
+    const fov = this.baseFov + this.fovKick;
+    if (Math.abs(fov - this._fov) > 0.02) {
+      this._fov = fov;
+      this.camera.fov = fov;
+      this.camera.updateProjectionMatrix();
+    }
 
     // Damped orbit: the view eases after the pointer instead of snapping with it.
     const orbitRate = this.dragging ? 22 : ORBIT_DAMPING;
