@@ -27,6 +27,16 @@ const BUILDING_COUNT = 170;
 const LANDMARK_BLOCK = [4, 4];
 const PARK_BLOCKS = new Set(['1,7', '7,1', '8,0']);
 
+// Wall tints, one palette per district, west to east. Three palettes rather than one list of
+// twelve greys: institutional concrete and glass toward the west, warm limestone around the
+// landmark, brick and ochre toward the docks, so a street corner reads as a part of town instead
+// of as a random draw from a bag of beige.
+const DISTRICT_TINTS = [
+  [0xe2e8f2, 0xd8e0ee, 0xccd8ec, 0xd6d6e2, 0xc6cede, 0xc0c8d8, 0xd0dcea],
+  [0xe8dfd2, 0xe6d8cc, 0xece2d4, 0xe0d0c6, 0xe8ded2, 0xdfd6c8],
+  [0xdcc9b8, 0xd9bda6, 0xcbb19c, 0xd6c3ae, 0xc9b8a4, 0xd2bda8],
+];
+
 // --- small utilities -------------------------------------------------------------------
 
 /** Deterministic 32-bit PRNG so a seed always rebuilds the same city. */
@@ -804,10 +814,6 @@ export class City {
   buildingsForBlocks() {
     const wallGeoms = Array.from({ length: 6 }, () => []);
     const roofGeoms = [];
-    const tint = [
-      0xe2e8f2, 0xd8e0ee, 0xe8dfd2, 0xccd8ec, 0xe6d8cc, 0xd6d6e2, 0xc6cede, 0xece2d4,
-      0xc0c8d8, 0xe0d0c6, 0xd0dcea, 0xe8ded2,
-    ];
 
     // Exactly BUILDING_COUNT buildings: 2 per block, plus a third on enough blocks to reach it.
     const buildable = this.blockList.filter((b) => !b.landmark && !b.park);
@@ -821,7 +827,10 @@ export class City {
       const block = buildable[bi];
       const rects = this.subdivideLot(extraSet.has(bi) ? 3 : 2, block);
       const variant = Math.floor(this.random() * 6);
-      const color = new THREE.Color(tint[Math.floor(this.random() * tint.length)]);
+      // One palette per district, picked from the block's column: still a single draw from the PRNG,
+      // so the skyline stays exactly the one the screenshots were taken of.
+      const palette = DISTRICT_TINTS[block.ix <= 2 ? 0 : block.ix <= 5 ? 1 : 2];
+      const color = new THREE.Color(palette[Math.floor(this.random() * palette.length)]);
 
       for (const rect of rects) {
         const w = Math.max(6, rect.x1 - rect.x0);
@@ -843,7 +852,11 @@ export class City {
         // Roof and floor faces tile the gravel at 6 m, the walls use the facade atlas.
         scaleBoxUV(geom, uReps, vReps, [w / 6, d / 6]);
 
-        const walls = paint(sliceFaces(geom, 0, 4), color);
+        // Footprints in one lot take slightly different shades of the block's tint, derived from
+        // where the footprint sits rather than from the PRNG: neighbours stop being one solid slab
+        // and the deterministic layout is untouched.
+        const shade = 0.94 + ((Math.sin(rect.x0 * 0.37 + rect.z1 * 0.61) + 1) / 2) * 0.12;
+        const walls = paint(sliceFaces(geom, 0, 4), color.clone().multiplyScalar(shade));
         const roof = sliceFaces(geom, 4, 2);
         geom.dispose();
 
@@ -1790,28 +1803,36 @@ export class City {
 
   /** A point on a sidewalk clear of buildings, for the player and for props. */
   randomSpawnPoint() {
-    const block = this.blockList[Math.floor(this.random() * this.blockList.length)];
     const ring = LOT / 2 + SIDEWALK / 2; // middle of the sidewalk strip
-    const side = Math.floor(this.random() * 4);
-    const along = (this.random() - 0.5) * (BLOCK - 4);
-    let x = block.center.x;
-    let z = block.center.z;
-    if (side === 0) z -= ring;
-    else if (side === 1) z += ring;
-    else if (side === 2) x -= ring;
-    else x += ring;
-    if (side < 2) x += along;
-    else z += along;
-
-    // Nudge out of any footprint we happen to land in.
-    for (const b of this.buildings) {
-      if (x > b.x0 - 0.4 && x < b.x1 + 0.4 && z > b.z0 - 0.4 && z < b.z1 + 0.4) {
-        x = block.center.x;
-        z = block.center.z + ring;
-        break;
-      }
+    // Try sixteen spots: a spawn inside a tower means the player starts the night wedged in a
+    // wall, and the old single nudge could land in the next footprint along.
+    for (let attempt = 0; attempt < 16; attempt++) {
+      const block = this.blockList[Math.floor(this.random() * this.blockList.length)];
+      const side = Math.floor(this.random() * 4);
+      const along = (this.random() - 0.5) * (BLOCK - 4);
+      let x = block.center.x;
+      let z = block.center.z;
+      if (side === 0) z -= ring;
+      else if (side === 1) z += ring;
+      else if (side === 2) x -= ring;
+      else x += ring;
+      if (side < 2) x += along;
+      else z += along;
+      if (!this.isClear(x, z, 0.6)) continue;
+      return new THREE.Vector3(x, SIDEWALK_TOP, z);
     }
-    return new THREE.Vector3(x, SIDEWALK_TOP, z);
+    // Sixteen misses: put them in the middle of an intersection, which is asphalt by definition.
+    const mid = Math.floor(ROAD_COORDS.length / 2);
+    return new THREE.Vector3(ROAD_COORDS[mid], 0, ROAD_COORDS[mid]);
+  }
+
+  /** True when a point is outside every building footprint, with `pad` metres to spare. */
+  isClear(x, z, pad = 0.4) {
+    for (const b of this.buildings) {
+      if (b.top < 0.6) continue;
+      if (x > b.x0 - pad && x < b.x1 + pad && z > b.z0 - pad && z < b.z1 + pad) return false;
+    }
+    return true;
   }
 
   stats() {

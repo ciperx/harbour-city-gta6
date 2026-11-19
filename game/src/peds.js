@@ -21,6 +21,7 @@ const RUN_SPEED_MIN = 3.0;
 const RUN_SPEED_MAX = 4.4;
 
 const ITEM_SIZE = { position: 3, normal: 3, uv: 2, color: 3 };
+const HEAD_PIVOT = 1.55; // top of the neck: the head turns about this, not about its own centre
 
 function paint(geom, color) {
   const count = geom.getAttribute('position').count;
@@ -62,7 +63,9 @@ function makePed(rng) {
   const coat = new THREE.Color(clothes[Math.floor(rng() * clothes.length)]);
   const legs = new THREE.Color(trousers[Math.floor(rng() * trousers.length)]);
   const parts = [];
+  const headParts = [];
   const push = (geom, color) => parts.push(paint(geom.toNonIndexed(), color));
+  const pushHead = (geom, color) => headParts.push(paint(geom.toNonIndexed(), color));
 
   const torso = new THREE.BoxGeometry(0.46, 0.62, 0.28);
   torso.translate(0, 1.16, 0);
@@ -90,15 +93,18 @@ function makePed(rng) {
   neck.translate(0, 1.5, 0);
   push(neck, skinTone);
 
+  // The head and hair are their own merge, measured from the neck pivot, because these are the
+  // faces that turn: a waiting pedestrian glances up and down the pavement, and a head welded
+  // into the torso can only ever stare at the horizon.
   const head = new THREE.BoxGeometry(0.26, 0.28, 0.26);
-  head.translate(0, 1.68, 0);
-  push(head, skinTone);
+  head.translate(0, 0.13, 0);
+  pushHead(head, skinTone);
 
   const hair = new THREE.BoxGeometry(0.28, 0.1, 0.28);
-  hair.translate(0, 1.82, -0.01);
-  push(hair, new THREE.Color(0x22242a));
+  hair.translate(0, 0.27, -0.01);
+  pushHead(hair, new THREE.Color(0x22242a));
 
-  return merge(parts);
+  return { body: merge(parts), head: merge(headParts) };
 }
 
 function mulberry32(seed) {
@@ -132,9 +138,17 @@ export class Peds {
       const axis = rng() > 0.5 ? 'z' : 'x';
       const road = ROAD_COORDS[1 + Math.floor(rng() * (ROAD_COORDS.length - 2))];
       const side = rng() > 0.5 ? 1 : -1;
-      const mesh = new THREE.Mesh(makePed(rng), this.material);
-      mesh.castShadow = false;
-      mesh.receiveShadow = false;
+      // Body and head are two meshes on one group, sharing the single crowd material: the body
+      // carries the walk, the head turns on the neck. The group is what the corridor code moves,
+      // so nothing else in this file had to change.
+      const parts = makePed(rng);
+      const mesh = new THREE.Group();
+      const body = new THREE.Mesh(parts.body, this.material);
+      body.name = 'ped-body';
+      const head = new THREE.Mesh(parts.head, this.material);
+      head.name = 'ped-head';
+      head.position.y = HEAD_PIVOT;
+      mesh.add(body, head);
       const ped = {
         axis,
         line: road + side * WALK_LINE,
@@ -142,6 +156,8 @@ export class Peds {
         t: -BOUNDS + rng() * BOUNDS * 2,
         speed: WALK_SPEED_MIN + rng() * (WALK_SPEED_MAX - WALK_SPEED_MIN),
         mesh,
+        head,
+        look: { target: 0, timer: Math.random() * 4 },
         phase: rng() * Math.PI * 2,
         waiting: false,
         flee: false,
@@ -316,6 +332,39 @@ export class Peds {
     this.#place(ped, dt);
   }
 
+  /**
+   * Head turns. A pedestrian waiting at the kerb or walking a quiet stretch glances up and down the
+   * pavement on a slow cycle; anyone within a few metres of the player turns to watch them pass; and
+   * a panicking crowd keeps its eyes on the road it is running down. The head is its own mesh on a
+   * neck pivot, so this costs one rotation per pedestrian, not a new body.
+   */
+  #look(ped, dt, playerPosition, panic) {
+    const head = ped.head;
+    if (!head) return;
+
+    ped.look.timer -= dt;
+    if (ped.look.timer <= 0) {
+      ped.look.timer = 1.6 + Math.random() * 3.2;
+      const spread = panic ? 0.16 : ped.waiting ? 0.9 : 0.42;
+      ped.look.target = (Math.random() - 0.5) * 2 * spread;
+    }
+
+    let target = ped.look.target;
+    if (playerPosition && !panic) {
+      const dx = playerPosition.x - ped.mesh.position.x;
+      const dz = playerPosition.z - ped.mesh.position.z;
+      const near = Math.hypot(dx, dz);
+      if (near > 0.8 && near < 9) {
+        const rel = Math.atan2(dx, dz) - ped.mesh.rotation.y;
+        // Attenuated: a passer-by earns a glance, not a full swivel on the spot.
+        target = THREE.MathUtils.clamp(Math.atan2(Math.sin(rel), Math.cos(rel)) * 0.65, -1.15, 1.15);
+      }
+    }
+
+    head.rotation.y += (target - head.rotation.y) * (1 - Math.exp(-6 * dt));
+    head.rotation.x = Math.sin(ped.phase * 0.5) * 0.02; // a little nod with the stride
+  }
+
   update(dt, ctx = {}) {
     const wanted = Number.isFinite(ctx.wanted) ? ctx.wanted : this.threat;
     this.setWanted(wanted);
@@ -329,6 +378,7 @@ export class Peds {
         if (ped.flee) this.#resume(ped);
         this.#walk(ped, dt);
       }
+      this.#look(ped, dt, playerPosition, panic);
     }
   }
 

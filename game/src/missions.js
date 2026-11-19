@@ -47,6 +47,7 @@ export class Missions {
     this.message = '';
     this.messageFor = 0;
     this.payout = 0;
+    this.paidOut = 0; // rotating index into PAYOUT_LINES, so a replayed chain reads differently
     this.progress = 0;
     this.total = 0;
     this.idleFor = 2.5;
@@ -237,7 +238,11 @@ export class Missions {
     this.player.money += payout;
     this.setMarker(null);
     this.clearPickups();
-    this.message = `JOB PAID  +$${payout.toLocaleString('en-US')}`;
+    // Same money, different wording every time: the job's own list, taken in rotation.
+    const lines = PAYOUT_LINES[this.index] || ["paid"];
+    const line = lines[this.paidOut % lines.length];
+    this.paidOut++;
+    this.message = `JOB PAID  +$${payout.toLocaleString('en-US')} — ${line}`;
     this.messageFor = 5;
     this.objectiveLine = 'Objective complete';
     this.idleFor = 5;
@@ -296,6 +301,18 @@ function roadPointNear(origin, minDistance = 35, maxDistance = 120) {
   }
   return new THREE.Vector3(ROAD_COORDS[2], 0, ROAD_COORDS[2]);
 }
+
+/**
+ * What the till says. Four jobs, four idioms: the money is identical, but a docks run that paid
+ * out with "clean handoff — the keys stay in it" would read as the wrong job. Each list rotates,
+ * so running the chain twice does not produce the same four lines twice.
+ */
+const PAYOUT_LINES = [
+  ["clean handoff", "keys still in it", "no questions asked"],
+  ["docks money, still warm", "gate cleared", "envelope counted twice"],
+  ["five drops, one payout", "all five logged", "the runner signs off"],
+  ["large bills, no receipt", "banked and unseen", "the cameras woke late"],
+];
 
 const MISSIONS = [
   {

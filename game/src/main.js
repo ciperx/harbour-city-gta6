@@ -65,7 +65,30 @@ const renderer = new THREE.WebGLRenderer({
   powerPreference: 'high-performance',
   stencil: false,
 });
-renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+
+// Resolution is a budget, not a constant: the ratio walks between the display's own value and a
+// floor two thirds of it, trading pixels for frame rate when the frame loop starts to sag and
+// taking them back when there is headroom. A city with 2048 px shadows is exactly the case where
+// an invisible notch of resolution beats a visible stutter, and the ratio is capped at 2 so a
+// 4K laptop panel never shades sixteen million pixels for the same picture.
+let pixelRatioCap = Math.min(2, window.devicePixelRatio || 1);
+let pixelRatioFloor = pixelRatioCap * 0.65;
+let pixelRatio = pixelRatioCap;
+const PIXEL_RATIO_HOLD = 1.2; // seconds between notches: settling, not oscillating
+let ratioHold = PIXEL_RATIO_HOLD;
+
+/**
+ * Move the render resolution one notch. Called by the frame loop and by resize, so the size the
+ * canvas backs itself with and the size the CSS stretches it to stay in step.
+ */
+function setPixelRatio(value) {
+  const next = THREE.MathUtils.clamp(value, pixelRatioFloor, pixelRatioCap);
+  if (Math.abs(next - pixelRatio) < 0.01) return;
+  pixelRatio = next;
+  renderer.setPixelRatio(pixelRatio);
+}
+
+renderer.setPixelRatio(pixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight, false);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -369,6 +392,9 @@ const player = new Player(spawn.point, city);
 player.yaw = spawn.yaw;
 player.group.rotation.y = spawn.yaw;
 scene.add(player.group);
+// Foot dust lives in world space, not on the body: a puff hangs where the boot landed while the
+// player carries on walking, so it gets its own layer next to the character.
+scene.add(player.effects);
 
 // Soft rim on the character: a small cool light that sits between the camera and the player,
 // high enough to catch the shoulders and hair so the silhouette stays readable against a wall.
@@ -472,6 +498,19 @@ function toggleCar() {
   enterNearestCar(4.0);
 }
 
+/**
+ * P freezes the world without touching the title screen: the frame loop stops simulating and
+ * drawing, and the HUD puts a badge over the last frame it drew. Resuming resets the clock so the
+ * pause does not arrive as one enormous dt.
+ */
+function togglePause() {
+  if (!state.started) return;
+  state.paused = !state.paused;
+  if (!state.paused) last = performance.now();
+  hud.showPaused(state.paused);
+  if (statusEl) statusEl.textContent = state.paused ? 'Paused. Press P to carry on.' : 'Back on the street.';
+}
+
 window.addEventListener('keydown', (event) => {
   if (event.repeat) {
     keys.add(event.code);
@@ -481,7 +520,8 @@ window.addEventListener('keydown', (event) => {
   keys.add(event.code);
   if (event.code === 'Space') jumpQueued = true;
   if (event.code === 'KeyF') toggleCar();
-  if (!state.started && (event.code === 'Enter' || event.code === 'Space' || event.code === 'KeyP')) start();
+  if (event.code === 'KeyP') togglePause();
+  if (!state.started && (event.code === 'Enter' || event.code === 'Space')) start();
 });
 
 window.addEventListener('keyup', (event) => {
@@ -605,7 +645,9 @@ function step(dt) {
     focusPoint.copy(cameraFocus);
   }
 
-  orbit.update(dt, focusPoint, city, lookAhead);
+  // The lens opens with speed: the car's speed behind the wheel, a sprint on foot.
+  const camSpeed = vehicles.driving ? Math.abs(vehicles.speed) : player.speed;
+  orbit.update(dt, focusPoint, city, lookAhead, camSpeed);
 
   // When the rig has to come in to shoulder distance the character would fill the frame;
   // hide them instead of filming the back of their head.
@@ -686,6 +728,24 @@ function refreshHud(dt) {
   });
 }
 
+/**
+ * FPS-adaptive resolution: the frame rate that stats() already reports is spent here. Below 48 fps
+ * take a notch off the pixel ratio, above 58 give one back, at most once per hold window so the
+ * loop cannot hunt between two neighbouring ratios.
+ */
+function adaptPixelRatio(dt) {
+  ratioHold -= dt;
+  if (ratioHold > 0) return;
+  const step = pixelRatioCap * 0.12;
+  if (state.fps < 48 && pixelRatio > pixelRatioFloor + 0.01) {
+    setPixelRatio(pixelRatio - step);
+    ratioHold = PIXEL_RATIO_HOLD;
+  } else if (state.fps > 58 && pixelRatio < pixelRatioCap - 0.01) {
+    setPixelRatio(pixelRatio + step);
+    ratioHold = PIXEL_RATIO_HOLD * 1.5;
+  }
+}
+
 function frame(now) {
   requestAnimationFrame(frame);
 
@@ -719,6 +779,7 @@ function frame(now) {
     fpsAccum = 0;
     fpsFrames = 0;
   }
+  adaptPixelRatio(dt);
 }
 
 // --- resize ----------------------------------------------------------------------------
@@ -726,7 +787,16 @@ function frame(now) {
 function resize() {
   const w = window.innerWidth;
   const h = window.innerHeight;
-  renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+  // Moving to a display with a different ratio rescales the whole budget rather than snapping the
+  // canvas back to full resolution: the adaptive ratio has to stay inside the new bounds.
+  const cap = Math.min(2, window.devicePixelRatio || 1);
+  if (Math.abs(cap - pixelRatioCap) > 0.01) {
+    pixelRatioCap = cap;
+    pixelRatioFloor = cap * 0.65;
+    pixelRatio = Math.min(pixelRatio, cap);
+    ratioHold = PIXEL_RATIO_HOLD;
+  }
+  renderer.setPixelRatio(pixelRatio);
   renderer.setSize(w, h, false);
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
@@ -821,10 +891,12 @@ window.game = {
   /** Freeze the loop and draw one frame: used for screenshots and for poking at the world. */
   pause() {
     state.paused = true;
+    hud.showPaused(true);
   },
   unpause() {
     state.paused = false;
     last = performance.now();
+    hud.showPaused(false);
   },
   renderOnce() {
     renderer.render(scene, camera);
@@ -859,6 +931,8 @@ window.game = {
       glowPoints: city.stats().glowPoints,
       lampLights: city.stats().lampLights,
       exposure: renderer.toneMappingExposure,
+      pixelRatio: Number(pixelRatio.toFixed(2)),
+      pixelRatioCap: Number(pixelRatioCap.toFixed(2)),
       bloomPoints: city.bloom ? city.bloom.geometry.getAttribute('position').count : 0,
       cameraDistance: Number(orbit.distance.toFixed(2)),
       cameraPulled: Number(orbit.pulledDistance.toFixed(2)),

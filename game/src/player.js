@@ -11,6 +11,8 @@ export const EYE = 1.66; // eye height above the player's feet
 export const RADIUS = 0.38; // capsule radius for collision
 export const HEIGHT = 1.78; // total standing height of the capsule
 
+const DUST_POOL = 16; // pooled footfall puffs, reused in a ring
+
 const GRAVITY = 22;
 const JUMP_SPEED = 6.6;
 const WALK_SPEED = 4.4;
@@ -38,6 +40,14 @@ export class Player {
     this.fallSpeed = 0;
     this.landDip = 0;
     this.onLand = null; // (impactSpeed) => void, wired by main to health
+
+    // Footfall dust: a world-space layer, so a puff stays where the boot struck instead of riding
+    // along with the character. main adds this to the scene next to the player group.
+    this.effects = new THREE.Group();
+    this.effects.name = 'player-effects';
+    this.dust = [];
+    this.dustCursor = 0;
+    this.stepMark = 0; // which half-stride the last puff belonged to
 
     this.#build();
 
@@ -136,6 +146,86 @@ export class Player {
     blob.renderOrder = 5;
     this.blob = blob;
     this.group.add(blob);
+
+    this.#buildDust();
+  }
+
+  /**
+   * The dust pool: sixteen sprites sharing one soft square-grit texture. Pooled rather than
+   * allocated per step, because a sprint puts a boot down eight times a second and a garbage
+   * collection in the middle of a chase is exactly the frame you notice.
+   */
+  #buildDust() {
+    const canvas = document.createElement('canvas');
+    canvas.width = 64;
+    canvas.height = 64;
+    const ctx = canvas.getContext('2d');
+    const g = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+    g.addColorStop(0, 'rgba(255,255,255,0.9)');
+    g.addColorStop(0.4, 'rgba(255,255,255,0.34)');
+    g.addColorStop(0.75, 'rgba(255,255,255,0.09)');
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, 64, 64);
+
+    const map = new THREE.CanvasTexture(canvas);
+    map.colorSpace = THREE.SRGBColorSpace;
+
+    for (let i = 0; i < DUST_POOL; i++) {
+      const sprite = new THREE.Sprite(
+        new THREE.SpriteMaterial({
+          map,
+          color: 0xcfc6b6,
+          transparent: true,
+          opacity: 0,
+          depthWrite: false,
+        }),
+      );
+      sprite.visible = false;
+      sprite.renderOrder = 4;
+      this.effects.add(sprite);
+      this.dust.push({ sprite, life: 0, maxLife: 1, vx: 0, vz: 0, rise: 0.4, size: 0.3, alpha: 0.3 });
+    }
+  }
+
+  /** One boot strike's worth of grit at a world point, lifted into the pooled sprites. */
+  #puff(x, y, z, count, strength) {
+    for (let i = 0; i < count; i++) {
+      const puff = this.dust[this.dustCursor % this.dust.length];
+      this.dustCursor++;
+      puff.sprite.position.set(x + (Math.random() - 0.5) * 0.22, y + Math.random() * 0.08, z + (Math.random() - 0.5) * 0.22);
+      puff.sprite.visible = true;
+      puff.maxLife = 0.45 + Math.random() * 0.35;
+      puff.life = puff.maxLife;
+      puff.size = 0.22 + Math.random() * 0.16;
+      puff.rise = 0.3 + Math.random() * 0.35;
+      puff.alpha = 0.34 * strength;
+      puff.vx = (Math.random() - 0.5) * 0.5;
+      puff.vz = (Math.random() - 0.5) * 0.5;
+      puff.sprite.scale.setScalar(puff.size);
+      puff.sprite.material.opacity = puff.alpha;
+    }
+  }
+
+  #updateDust(dt) {
+    for (const puff of this.dust) {
+      if (puff.life <= 0) continue;
+      puff.life -= dt;
+      if (puff.life <= 0) {
+        puff.sprite.visible = false;
+        puff.sprite.material.opacity = 0;
+        continue;
+      }
+      const age = 1 - puff.life / puff.maxLife;
+      puff.sprite.position.y += puff.rise * dt;
+      puff.sprite.position.x += puff.vx * dt;
+      puff.sprite.position.z += puff.vz * dt;
+      const drag = Math.exp(-2.6 * dt);
+      puff.vx *= drag;
+      puff.vz *= drag;
+      puff.sprite.scale.setScalar(puff.size * (1 + 1.8 * age));
+      puff.sprite.material.opacity = puff.alpha * (1 - age) * (1 - age);
+    }
   }
 
   /** Where the camera should look: just below the eyes. */
@@ -223,6 +313,14 @@ export class Player {
       this.fallSpeed = 0;
       if (impact > 4) {
         this.landDip = Math.min(0.36, impact * 0.022);
+        // A rooftop or a jump landing kicks up a ring of grit, sized by the fall.
+        this.#puff(
+          this.position.x,
+          groundY + 0.05,
+          this.position.z,
+          Math.min(7, 3 + Math.round(impact / 3)),
+          Math.min(1.2, impact / 10),
+        );
         if (this.onLand) this.onLand(impact);
       }
     }
@@ -244,6 +342,24 @@ export class Player {
     this.blob.position.y = groundY - this.position.y + 0.02;
     this.blob.material.opacity = 0.62 * THREE.MathUtils.clamp(1 - air / 3.2, 0.1, 1);
     this.blob.scale.setScalar(1 + Math.min(1.2, air * 0.24));
+
+    // Footfall dust: the walk cycle crosses a multiple of PI twice per stride, one for each boot.
+    // Emitted at the foot rather than at the hips, so it reads as contact with the pavement.
+    const mark = Math.floor(this.animPhase / Math.PI);
+    if (this.grounded && this.speed > 0.9) {
+      if (mark !== this.stepMark) {
+        this.stepMark = mark;
+        const side = mark % 2 === 0 ? -1 : 1; // left foot, then right
+        const bx = this.position.x + Math.cos(this.yaw) * side * 0.16;
+        const bz = this.position.z - Math.sin(this.yaw) * side * 0.16;
+        this.#puff(bx, groundY + 0.04, bz, this.speed > 6.5 ? 3 : 2, THREE.MathUtils.clamp(this.speed / 8.6, 0.3, 1));
+      }
+    } else {
+      // Standing still must not fire a puff as the phase drifts past the next mark.
+      this.stepMark = mark;
+    }
+
+    this.#updateDust(dt);
   }
 
   /** Push the capsule out of any building box it overlaps, along the shallower axis. */

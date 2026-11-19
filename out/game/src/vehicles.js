@@ -13,6 +13,13 @@ const WRAP_LO = -BOUNDS - 30;
 const WRAP_SPAN = (BOUNDS + 30) * 2;
 const BRAKE_DISTANCE = 8; // the gap a car keeps to the one in front
 
+// Tail-light levels. The lens is built at 0.6 opacity on a 2 m sprite; under braking it goes to
+// full and swells, which is what a filament in a red lens actually looks like at dusk.
+const TAIL_BASE_OPACITY = 0.6;
+const TAIL_BRAKE_OPACITY = 1;
+const TAIL_BASE_SCALE = 2;
+const TAIL_BRAKE_SCALE = 2.7;
+
 // --- shared assets ---------------------------------------------------------------------
 
 function radialCanvas(size, stops) {
@@ -588,6 +595,24 @@ export class Vehicles {
     return this.smoke.reduce((n, p) => n + (p.life > 0 ? 1 : 0), 0);
   }
 
+  // -- brake lights ----------------------------------------------------------------------
+
+  /**
+   * Show or hide a car's brake lights. `brake` is the eased 0..1 amount: lights snap on with a
+   * tap of the pedal and fade back over a beat, because a hard cut reads as a rendering glitch.
+   * The parked fleet never calls this, so an abandoned car sits with its tail dim.
+   */
+  #setBrake(car, want, dt) {
+    const target = want ? 1 : 0;
+    const rate = want ? 15 : 4.5;
+    car.brake = (car.brake || 0) + (target - (car.brake || 0)) * (1 - Math.exp(-rate * Math.min(dt, 0.1)));
+    const glow = car.mesh.userData.tailGlow;
+    if (!glow) return;
+    glow.material.opacity = TAIL_BASE_OPACITY + (TAIL_BRAKE_OPACITY - TAIL_BASE_OPACITY) * car.brake;
+    const size = TAIL_BASE_SCALE + (TAIL_BRAKE_SCALE - TAIL_BASE_SCALE) * car.brake;
+    glow.scale.set(size, size, 1);
+  }
+
   // -- placement ------------------------------------------------------------------------
 
   /** Lane position in world space for a car's current road parameter. */
@@ -684,7 +709,13 @@ export class Vehicles {
     if (gap < 24) target = Math.min(target, Math.max(0, (gap - BRAKE_DISTANCE) * 1.6));
 
     const accel = target > car.speed ? 5.5 : 16;
+    const before = car.speed;
     car.speed += THREE.MathUtils.clamp(target - car.speed, -accel * dt, accel * dt);
+
+    // Brake lights: on while slowing, and held on at a standstill — a car waiting at a red light
+    // with its foot off the pedal in real traffic is exactly what looks wrong on screen.
+    const slowed = car.speed < before - 0.35;
+    this.#setBrake(car, slowed || car.speed < 0.8, dt);
 
     car.t += car.speed * car.dir * dt;
     if (car.t > WRAP_LO + WRAP_SPAN) car.t -= WRAP_SPAN;
@@ -742,6 +773,13 @@ export class Vehicles {
     this.driving = null;
     car.speed = 0;
     if (car.mesh.userData.headGlow) car.mesh.userData.headGlow.material.opacity = 0.75;
+    // An abandoned car is scenery: no pedal held, so the tail lens drops back to its parked level.
+    car.brake = 0;
+    const tail = car.mesh.userData.tailGlow;
+    if (tail) {
+      tail.material.opacity = TAIL_BASE_OPACITY;
+      tail.scale.set(TAIL_BASE_SCALE, TAIL_BASE_SCALE, 1);
+    }
 
     const heading = car.heading;
     const base = car.mesh.position;
@@ -778,11 +816,8 @@ export class Vehicles {
 
   /** Is this point inside a building footprint, with `pad` metres of clearance? */
   #insideBuilding(x, z, pad = 0) {
-    for (const b of this.city.buildings) {
-      if (b.top < 0.6) continue;
-      if (x > b.x0 - pad && x < b.x1 + pad && z > b.z0 - pad && z < b.z1 + pad) return true;
-    }
-    return false;
+    // The city owns the footprints; one test, one place, so the fleet and the spawn agree.
+    return !this.city.isClear(x, z, pad);
   }
 
   // -- player driving -------------------------------------------------------------------
@@ -795,6 +830,7 @@ export class Vehicles {
     const MAX_FORWARD = 30;
     const MAX_REVERSE = -9;
     const accel = car.speed < 0 ? 16 : 11.5;
+    const before = car.speed;
 
     if (throttle > 0) car.speed += accel * dt;
     else if (throttle < 0) car.speed -= accel * 0.85 * dt;
@@ -802,6 +838,10 @@ export class Vehicles {
 
     if (handbrake) car.speed *= Math.exp(-3.4 * dt);
     car.speed = THREE.MathUtils.clamp(car.speed, MAX_REVERSE, MAX_FORWARD);
+
+    // Brake lights for the player's car: pedal, handbrake, or anything that costs speed — a shunt
+    // from a police bumper included.
+    this.#setBrake(car, throttle < 0 || handbrake || car.speed < before - 0.35, dt);
 
     // Steering scales with speed: no turning on the spot, and it tightens as the car slows.
     const grip = handbrake ? 0.45 : 1;

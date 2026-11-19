@@ -302,13 +302,14 @@ export class Police {
 
     for (const unit of [...this.units]) {
       const p = unit.mesh.position;
-      if (Math.hypot(p.x - playerPosition.x, p.z - playerPosition.z) > RETIRE) {
+      const away = Math.hypot(p.x - playerPosition.x, p.z - playerPosition.z);
+      if (away > RETIRE) {
         // Too far behind: replace it rather than let a stale car trail the player forever.
         this.#despawnUnit(unit);
         continue;
       }
       this.#stepUnit(unit, dt, target, car, playerPosition);
-      this.#flashSiren(unit);
+      this.#flashSiren(unit, away);
     }
 
     // Reinforcements: keep the wave at strength, one replacement at a time.
@@ -433,22 +434,28 @@ export class Police {
     }
   }
 
-  /** Per-unit siren: red and blue alternate, each unit on its own phase. */
-  #flashSiren(unit) {
+  /**
+   * Per-unit siren: red and blue alternate, each unit on its own phase. There is no audio in this
+   * city, so "volume" is light: the bar's throw onto the asphalt and the size of its halo fall off
+   * with how far the unit is from the player. A unit a block away still flashes, but it stops
+   * painting the whole frame red, and the one on your bumper is at full brightness.
+   */
+  #flashSiren(unit, distance = 0) {
     const siren = unit.siren;
     if (!siren) return;
     const phase = this.flash * 7.4 + unit.sirenPhase;
     const redOn = Math.sin(phase) > 0;
+    const atten = THREE.MathUtils.clamp(1 - (distance - 14) / 72, 0.22, 1);
 
-    siren.red.emissiveIntensity = redOn ? 9 : 0.25;
-    siren.blue.emissiveIntensity = redOn ? 0.25 : 9;
+    siren.red.emissiveIntensity = redOn ? 9 * atten : 0.12 + 0.13 * atten;
+    siren.blue.emissiveIntensity = redOn ? 0.12 + 0.13 * atten : 9 * atten;
 
-    if (siren.redGlow) siren.redGlow.material.opacity = redOn ? 0.85 : 0.06;
-    if (siren.blueGlow) siren.blueGlow.material.opacity = redOn ? 0.06 : 0.85;
+    if (siren.redGlow) siren.redGlow.material.opacity = redOn ? 0.85 * atten : 0.06;
+    if (siren.blueGlow) siren.blueGlow.material.opacity = redOn ? 0.06 : 0.85 * atten;
 
     if (siren.light) {
       siren.light.color.setHex(redOn ? 0xff2418 : 0x2a6bff);
-      siren.light.intensity = 14;
+      siren.light.intensity = 14 * atten;
     }
   }
 

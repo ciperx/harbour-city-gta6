@@ -14,6 +14,18 @@ const MINT = '#7ef0c4';
 const INK = 'rgba(8, 12, 20, 0.72)';
 const LINE = 'rgba(232, 238, 252, 0.16)';
 
+const COMPASS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+
+/**
+ * Bearing in degrees for a world yaw. The player's forward is (sin yaw, cos yaw) in world XZ and
+ * the minimap is drawn north-up, so north is -Z: bearing 0 is +yaw = PI. Keeping this in one place
+ * is what makes the minimap's "N" and the compass chip agree.
+ */
+function bearingOf(yaw) {
+  const deg = (Math.atan2(Math.sin(yaw), -Math.cos(yaw)) * 180) / Math.PI;
+  return (deg + 360) % 360;
+}
+
 function money(n) {
   return `$${Math.round(n).toLocaleString('en-US')}`;
 }
@@ -68,6 +80,7 @@ export class HUD {
     };
     this.shownSpeed = 0;
     this.time = 0;
+    this.paused = false;
     this.resize(window.innerWidth, window.innerHeight);
   }
 
@@ -81,6 +94,8 @@ export class HUD {
     this.canvas.style.width = `${this.width}px`;
     this.canvas.style.height = `${this.height}px`;
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    // Resizing wipes the canvas; a frozen loop will not repaint, so put the badge back by hand.
+    if (this.paused) this.showPaused(true);
   }
 
   update(dt, state) {
@@ -105,6 +120,7 @@ export class HUD {
     this.#drawSpeed(ctx);
     this.#drawHints(ctx);
     this.#drawMinimap(ctx);
+    this.#drawCompass(ctx);
   }
 
   #roundRect(ctx, x, y, w, h, r) {
@@ -530,6 +546,94 @@ export class HUD {
     this.#roundRect(ctx, x, y, size, size, 8);
     ctx.strokeStyle = 'rgba(111,214,255,0.25)';
     ctx.stroke();
+    ctx.restore();
+  }
+
+  /**
+   * Compass chip above the minimap: a needle, the cardinal letter the player is facing and the
+   * bearing in degrees. The map is north-up, so the needle and the map can be read together —
+   * "the drop is behind me, I am facing east" is a decision you can make at 120 km/h.
+   */
+  #drawCompass(ctx) {
+    const size = MAP_SIZE;
+    const mapX = this.width - size - MAP_MARGIN;
+    const mapY = this.height - size - MAP_MARGIN;
+    const bearing = bearingOf(this.state.yaw);
+    const letter = COMPASS[Math.round(bearing / 45) % 8];
+    const inCar = Boolean(this.state.inCar);
+
+    const w = 104;
+    const h = 24;
+    const x = mapX + size - w; // right-aligned with the map panel
+    const y = mapY - 10 - h;
+
+    ctx.save();
+    this.#roundRect(ctx, x, y, w, h, 7);
+    ctx.fillStyle = INK;
+    ctx.fill();
+    ctx.strokeStyle = inCar ? 'rgba(255, 179, 71, 0.42)' : 'rgba(111, 214, 255, 0.3)';
+    ctx.lineWidth = 1;
+    this.#roundRect(ctx, x, y, w, h, 7);
+    ctx.stroke();
+
+    // Needle: a north tick that swings to the bearing, pivoting on the chip's left edge.
+    const nx = x + 15;
+    const ny = y + h / 2;
+    ctx.save();
+    ctx.translate(nx, ny);
+    ctx.rotate((bearing * Math.PI) / 180);
+    ctx.beginPath();
+    ctx.moveTo(0, -6.5);
+    ctx.lineTo(3.2, 1.6);
+    ctx.lineTo(0, 0.2);
+    ctx.lineTo(-3.2, 1.6);
+    ctx.closePath();
+    ctx.fillStyle = inCar ? AMBER : MINT;
+    ctx.fill();
+    ctx.restore();
+
+    ctx.textAlign = 'left';
+    ctx.font = `700 12px ${MONO}`;
+    ctx.fillStyle = inCar ? AMBER : MINT;
+    ctx.fillText(letter, x + 28, y + 16);
+
+    ctx.textAlign = 'right';
+    ctx.font = `600 10px ${MONO}`;
+    ctx.fillStyle = 'rgba(232, 238, 252, 0.55)';
+    ctx.fillText(`${String(Math.round(bearing) % 360).padStart(3, '0')}°`, x + w - 9, y + 16);
+    ctx.restore();
+  }
+
+  /**
+   * The loop is frozen while paused, so this must not clear: the badge goes over the last frame
+   * that was drawn. The next simulated frame paints over it.
+   */
+  showPaused(paused) {
+    this.paused = Boolean(paused);
+    const ctx = this.ctx;
+    if (!ctx || !this.paused) return;
+
+    const w = 188;
+    const h = 56;
+    const x = this.width / 2 - w / 2;
+    const y = this.height * 0.3;
+
+    ctx.save();
+    this.#roundRect(ctx, x, y, w, h, 12);
+    ctx.fillStyle = 'rgba(8, 12, 20, 0.84)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(111, 214, 255, 0.42)';
+    ctx.lineWidth = 1;
+    this.#roundRect(ctx, x, y, w, h, 12);
+    ctx.stroke();
+
+    ctx.textAlign = 'center';
+    ctx.font = `700 13px ${MONO}`;
+    ctx.fillStyle = MINT;
+    ctx.fillText('PAUSED', this.width / 2, y + 25);
+    ctx.font = `600 10px ${MONO}`;
+    ctx.fillStyle = 'rgba(232, 238, 252, 0.55)';
+    ctx.fillText('P to carry on', this.width / 2, y + 43);
     ctx.restore();
   }
 }

@@ -1,5 +1,6 @@
 // Third-person orbit camera: drag to orbit, wheel to zoom (4 to 18 m), damped follow, a look-ahead
-// that leans the frame the way the player is moving, and two separate guards against walls.
+// that leans the frame the way the player is moving, a lens that opens with speed and a small bank
+// into a corner, and two separate guards against walls.
 //
 // Guard one is a ray from the head to the ideal position: the rig stops in front of the first
 // building box it would enter, so the camera never films from inside concrete.
@@ -115,6 +116,8 @@ export class OrbitCamera {
     this.baseFov = camera.fov;
     this._fov = this.baseFov;
     this.fovKick = 0;
+    // Bank: the roll the lens picks up while the aim sweeps fast enough to be a cornering car.
+    this.lean = 0;
 
     this._pointerId = null;
     this._lastX = 0;
@@ -384,6 +387,7 @@ export class OrbitCamera {
   update(dt, target, city = null, lookAhead = null, speed = 0) {
     const step = Math.min(dt, 0.1);
     const walls = this.collide ? city : null;
+    const yawWas = this._yaw;
 
     // Speed widens the lens: 0 on foot, 1 at about forty metres per second. Eased on a slow
     // spring so a hard brake does not snap the frame, and the projection is only rebuilt when
@@ -491,8 +495,20 @@ export class OrbitCamera {
     this.position.lerp(this._goal, posT);
     if (this.position.y < 0.75) this.position.y = 0.75;
 
+    // Bank into the corner. A lens that holds the horizon level while the car is turning at
+    // fifteen metres a second reads as a slide projector; a couple of degrees of roll reads as
+    // weight. Driven by how fast the aim is actually sweeping (so the damped follow, not the raw
+    // pointer, sets it), gated by speed so a standing drag never tilts the horizon, and eased so
+    // a flick of the wheel is a lean rather than a snap.
+    const swept = Math.atan2(Math.sin(this._yaw - yawWas), Math.cos(this._yaw - yawWas));
+    const yawRate = swept / Math.max(step, 1e-4);
+    const gate = THREE.MathUtils.clamp(Math.abs(speed) / 14, 0, 1);
+    const wantedLean = THREE.MathUtils.clamp(-yawRate * 0.045, -0.07, 0.07) * gate;
+    this.lean += (wantedLean - this.lean) * (1 - Math.exp(-3.6 * step));
+
     this.camera.position.copy(this.position);
     this.camera.lookAt(this.focus);
+    if (Math.abs(this.lean) > 0.0004) this.camera.rotateZ(this.lean);
   }
 
   #goalAt(pitch, distance) {
