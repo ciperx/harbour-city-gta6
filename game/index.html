@@ -182,6 +182,23 @@
     color: rgba(111, 214, 255, 0.4);
   }
 
+  .missions {
+    margin: 22px auto 0;
+    max-width: 44ch;
+    font-size: 12px;
+    line-height: 1.65;
+    color: rgba(255, 179, 71, 0.66);
+  }
+
+  .missions b {
+    display: block;
+    margin-bottom: 4px;
+    font-size: 10px;
+    letter-spacing: 0.24em;
+    text-transform: uppercase;
+    color: rgba(255, 203, 130, 0.92);
+  }
+
   @media (max-width: 520px) {
     .panel { padding: 30px 20px 26px; border-radius: 16px; }
     .controls { gap: 6px 12px; font-size: 11px; }
@@ -198,15 +215,21 @@
       <div class="kicker">Dusk District &middot; Sector 9</div>
       <h1>HARBOUR CITY</h1>
       <div class="rule"></div>
-      <p class="sub">Nine by nine blocks of glass and neon on the waterfront. Walk the streets, climb the roofs, watch the city light up.</p>
+      <p class="sub">The sun has gone down behind the towers and the avenues are full of traffic. Walk the waterfront, take a car off the kerb, and run jobs for people who pay cash and ask nothing.</p>
       <button id="play" type="button">Play</button>
       <div class="controls">
-        <span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move</span>
+        <span><kbd>WASD</kbd> move</span>
         <span><kbd>Shift</kbd> sprint</span>
-        <span><kbd>Space</kbd> jump</span>
+        <span><kbd>Space</kbd> jump / brake</span>
+        <span><kbd>F</kbd> take a car</span>
+        <span><kbd>Click</kbd> fire</span>
         <span><kbd>Drag</kbd> orbit</span>
-        <span><kbd>Wheel</kbd> zoom</span>
       </div>
+      <p class="missions">
+        <b>Four jobs, one beacon</b>
+        Hot Wire &middot; Docks Run &middot; Packages &middot; The Vault &mdash; follow the amber beam for the next one.
+        Every star you earn has to be shaken off, and 20 quiet seconds buys you one back.
+      </p>
       <div class="hint">Click play, then drag the city to look around</div>
     </div>
   </div>

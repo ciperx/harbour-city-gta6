@@ -1,5 +1,6 @@
-// The HUD: a 2D canvas laid over the 3D view. Health, money, speed, a minimap built from the
-// same road grid the city was generated from, and the control hints.
+// The HUD: a 2D canvas laid over the 3D view. Vitals, the wanted stars, the mission objective and
+// its clock, the balance, a speed readout that switches to km/h behind the wheel, a minimap with
+// the job marker and the police on it, and the control hints.
 
 import { BOUNDS, GRID, PITCH, ROAD_COORDS, ROAD_WIDTH, BLOCK } from './city.js';
 
@@ -17,6 +18,30 @@ function money(n) {
   return `$${Math.round(n).toLocaleString('en-US')}`;
 }
 
+function star(ctx, cx, cy, r, filled) {
+  ctx.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const rad = i % 2 === 0 ? r : r * 0.44;
+    const a = (Math.PI / 5) * i - Math.PI / 2;
+    const x = cx + Math.cos(a) * rad;
+    const y = cy + Math.sin(a) * rad;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+  if (filled) {
+    ctx.fillStyle = '#ffd98a';
+    ctx.shadowColor = 'rgba(255, 179, 71, 0.9)';
+    ctx.shadowBlur = 10;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+  } else {
+    ctx.strokeStyle = 'rgba(232, 238, 252, 0.22)';
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+  }
+}
+
 export class HUD {
   constructor(canvas) {
     this.canvas = canvas;
@@ -24,7 +49,22 @@ export class HUD {
     this.width = 0;
     this.height = 0;
     this.dpr = Math.min(2, window.devicePixelRatio || 1);
-    this.state = { health: 100, money: 0, speed: 0, yaw: 0, x: 0, z: 0 };
+    this.state = {
+      health: 100,
+      money: 0,
+      speed: 0,
+      yaw: 0,
+      x: 0,
+      z: 0,
+      wanted: 0,
+      objective: '',
+      message: '',
+      inCar: false,
+      prompt: '',
+      marker: null,
+      police: [],
+      timeLeft: 0,
+    };
     this.shownSpeed = 0;
     this.time = 0;
     this.resize(window.innerWidth, window.innerHeight);
@@ -58,6 +98,8 @@ export class HUD {
     this.#drawVignette(ctx);
     this.#drawHealth(ctx);
     this.#drawMoney(ctx);
+    this.#drawWanted(ctx);
+    this.#drawObjective(ctx);
     this.#drawSpeed(ctx);
     this.#drawHints(ctx);
     this.#drawMinimap(ctx);
@@ -75,7 +117,6 @@ export class HUD {
   }
 
   #drawVignette(ctx) {
-    // A whisper of darkening at the edges makes the sunset pop.
     const g = ctx.createRadialGradient(
       this.width / 2,
       this.height * 0.55,
@@ -100,7 +141,6 @@ export class HUD {
     ctx.save();
     ctx.fillStyle = 'rgba(232,238,252,0.55)';
     ctx.font = `600 10px ${MONO}`;
-    ctx.letterSpacing = '2px';
     ctx.fillText('VITALS', x, y - 8);
 
     this.#roundRect(ctx, x, y, w, h, h / 2);
@@ -114,7 +154,6 @@ export class HUD {
     ctx.fillStyle = grad;
     ctx.fill();
 
-    // tick marks every 25 hp
     ctx.strokeStyle = 'rgba(8,12,20,0.55)';
     ctx.lineWidth = 1;
     for (let i = 1; i < 4; i++) {
@@ -146,11 +185,65 @@ export class HUD {
     ctx.shadowBlur = 16;
     ctx.fillText(money(this.state.money), right, y + 18);
     ctx.shadowBlur = 0;
+    ctx.restore();
+  }
 
-    // a small trend chip under the balance
-    ctx.font = `600 10px ${MONO}`;
-    ctx.fillStyle = 'rgba(126,240,196,0.8)';
-    ctx.fillText('+ 3.4% TODAY', right, y + 34);
+  /** Five stars over the objective, so the police state is the first thing you read. */
+  #drawWanted(ctx) {
+    const stars = Math.max(0, Math.min(5, this.state.wanted || 0));
+    const cx = this.width / 2;
+    const y = 30;
+    const gap = 22;
+    const startX = cx - (gap * 4) / 2;
+
+    ctx.save();
+    if (stars > 0) {
+      ctx.textAlign = 'center';
+      ctx.font = `600 9px ${MONO}`;
+      ctx.fillStyle = 'rgba(255, 217, 138, 0.75)';
+      ctx.fillText('WANTED', cx, y - 16);
+    }
+    for (let i = 0; i < 5; i++) star(ctx, startX + i * gap, y, 7.6, i < stars);
+    ctx.restore();
+  }
+
+  #drawObjective(ctx) {
+    const cx = this.width / 2;
+    const objective = this.state.objective || '';
+    const message = this.state.message || '';
+    let y = 58;
+
+    ctx.save();
+    ctx.textAlign = 'center';
+    if (objective) {
+      ctx.font = `600 12px ${MONO}`;
+      const w = Math.min(this.width - 120, ctx.measureText(objective).width + 26);
+      this.#roundRect(ctx, cx - w / 2, y - 14, w, 22, 11);
+      ctx.fillStyle = 'rgba(8, 12, 20, 0.58)';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255, 179, 71, 0.28)';
+      ctx.lineWidth = 1;
+      this.#roundRect(ctx, cx - w / 2, y - 14, w, 22, 11);
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(255, 232, 198, 0.94)';
+      ctx.fillText(objective, cx, y + 1);
+      y += 28;
+    }
+
+    if (message) {
+      ctx.font = `700 15px ${MONO}`;
+      ctx.fillStyle = AMBER;
+      ctx.shadowColor = 'rgba(255, 159, 60, 0.65)';
+      ctx.shadowBlur = 16;
+      ctx.fillText(message, cx, y + 4);
+      ctx.shadowBlur = 0;
+    }
+
+    if (this.state.prompt) {
+      ctx.font = `600 11px ${MONO}`;
+      ctx.fillStyle = 'rgba(232, 238, 252, 0.55)';
+      ctx.fillText(this.state.prompt, cx, this.height - 74);
+    }
     ctx.restore();
   }
 
@@ -158,44 +251,56 @@ export class HUD {
     const x = 24;
     const y = this.height - 92;
     const speed = this.shownSpeed;
+    const inCar = Boolean(this.state.inCar);
+    const shown = inCar ? speed * 3.6 : speed;
+    const unit = inCar ? 'KM/H' : 'M/S';
+    const ceiling = inCar ? 110 : 9;
 
     ctx.save();
     ctx.fillStyle = 'rgba(232,238,252,0.5)';
     ctx.font = `600 10px ${MONO}`;
-    ctx.fillText('GROUND SPEED', x, y - 8);
+    ctx.fillText(inCar ? 'ROAD SPEED' : 'GROUND SPEED', x, y - 8);
 
     ctx.font = `700 30px ${MONO}`;
     ctx.fillStyle = speed > 6.2 ? AMBER : 'rgba(232,238,252,0.92)';
-    ctx.fillText(speed.toFixed(1), x, y + 22);
+    ctx.fillText(shown.toFixed(0), x, y + 22);
 
     ctx.font = `600 12px ${MONO}`;
     ctx.fillStyle = 'rgba(232,238,252,0.45)';
-    ctx.fillText('m/s', x + ctx.measureText(speed.toFixed(1)).width + 46, y + 22);
+    ctx.fillText(unit, x + ctx.measureText(shown.toFixed(0)).width + 8, y + 22);
 
-    // little bar showing the sprint ceiling
     const bw = 132;
     const bh = 4;
     this.#roundRect(ctx, x, y + 34, bw, bh, 2);
     ctx.fillStyle = 'rgba(255,255,255,0.1)';
     ctx.fill();
-    this.#roundRect(ctx, x, y + 34, Math.max(2, (bw * Math.min(speed, 9)) / 9), bh, 2);
-    ctx.fillStyle = speed > 6.2 ? AMBER : MINT;
+    this.#roundRect(ctx, x, y + 34, Math.max(2, (bw * Math.min(shown, ceiling)) / ceiling), bh, 2);
+    ctx.fillStyle = speed > (inCar ? 18 : 6.2) ? AMBER : MINT;
     ctx.fill();
     ctx.restore();
   }
 
   #drawHints(ctx) {
-    const hints = [
-      ['WASD', 'move'],
-      ['SHIFT', 'sprint'],
-      ['SPACE', 'jump'],
-      ['DRAG', 'orbit'],
-      ['WHEEL', 'zoom'],
-    ];
+    const inCar = Boolean(this.state.inCar);
+    const hints = inCar
+      ? [
+          ['W/S', 'throttle'],
+          ['A/D', 'steer'],
+          ['SPACE', 'handbrake'],
+          ['F', 'get out'],
+        ]
+      : [
+          ['WASD', 'move'],
+          ['SHIFT', 'sprint'],
+          ['SPACE', 'jump'],
+          ['F', 'take car'],
+          ['CLICK', 'fire'],
+          ['DRAG', 'orbit'],
+        ];
+
     ctx.save();
     ctx.font = `600 10px ${MONO}`;
-    ctx.textAlign = 'center';
-    const gap = 20;
+    const gap = 16;
     const parts = hints.map(([k, v]) => ({ k, v, kw: ctx.measureText(k).width, vw: ctx.measureText(v).width }));
     const total = parts.reduce((sum, p) => sum + p.kw + p.vw + 14 + gap, -gap);
     let x = this.width / 2 - total / 2;
@@ -224,12 +329,11 @@ export class HUD {
     const size = MAP_SIZE;
     const x = this.width - size - MAP_MARGIN;
     const y = this.height - size - MAP_MARGIN;
-    const unit = size / (BOUNDS * 2); // pixels per metre
+    const unit = size / (BOUNDS * 2);
     const sx = (wx) => x + (wx + BOUNDS) * unit;
     const sy = (wz) => y + (wz + BOUNDS) * unit;
 
     ctx.save();
-    // frame
     this.#roundRect(ctx, x - 8, y - 8, size + 16, size + 16, 14);
     ctx.fillStyle = INK;
     ctx.fill();
@@ -238,7 +342,6 @@ export class HUD {
     this.#roundRect(ctx, x - 8, y - 8, size + 16, size + 16, 14);
     ctx.stroke();
 
-    // clip the map to a rounded rect so the harbour water stays inside
     this.#roundRect(ctx, x, y, size, size, 8);
     ctx.save();
     ctx.clip();
@@ -246,11 +349,9 @@ export class HUD {
     ctx.fillStyle = 'rgba(18, 24, 34, 0.95)';
     ctx.fillRect(x, y, size, size);
 
-    // harbour beyond the promenade
     ctx.fillStyle = 'rgba(30, 68, 96, 0.85)';
     ctx.fillRect(x, sy(BOUNDS + 1), size, y + size - sy(BOUNDS + 1));
 
-    // blocks as faint slabs
     ctx.fillStyle = 'rgba(190, 200, 220, 0.12)';
     for (let i = 0; i < GRID; i++) {
       for (let j = 0; j < GRID; j++) {
@@ -260,7 +361,6 @@ export class HUD {
       }
     }
 
-    // roads
     ctx.strokeStyle = 'rgba(233, 226, 206, 0.5)';
     ctx.lineWidth = Math.max(1, ROAD_WIDTH * unit);
     ctx.beginPath();
@@ -277,6 +377,25 @@ export class HUD {
     ctx.fillStyle = 'rgba(255, 179, 71, 0.85)';
     ctx.fillRect(sx(lc) - 2.5, sy(lc) - 2.5, 5, 5);
 
+    // the mission marker, pulsing
+    const marker = this.state.marker;
+    if (marker) {
+      const pulse = 4 + Math.sin(this.time * 4) * 2;
+      ctx.beginPath();
+      ctx.arc(sx(marker.x), sy(marker.z), pulse, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(255, 179, 71, 0.95)';
+      ctx.lineWidth = 1.6;
+      ctx.stroke();
+    }
+
+    // police units
+    for (const unit of this.state.police || []) {
+      ctx.beginPath();
+      ctx.arc(sx(unit.x), sy(unit.z), 2.2, 0, Math.PI * 2);
+      ctx.fillStyle = '#6fa8ff';
+      ctx.fill();
+    }
+
     // player arrow: forward is (sin yaw, cos yaw) in world XZ, which is (right, down) here
     ctx.save();
     ctx.translate(sx(this.state.x), sy(this.state.z));
@@ -287,15 +406,14 @@ export class HUD {
     ctx.lineTo(0, 3);
     ctx.lineTo(-5, 6);
     ctx.closePath();
-    ctx.fillStyle = MINT;
-    ctx.shadowColor = 'rgba(126,240,196,0.9)';
+    ctx.fillStyle = this.state.inCar ? AMBER : MINT;
+    ctx.shadowColor = this.state.inCar ? 'rgba(255,179,71,0.9)' : 'rgba(126,240,196,0.9)';
     ctx.shadowBlur = 8;
     ctx.fill();
     ctx.restore();
 
     ctx.restore(); // clip
 
-    // N marker (north is -Z, the top of the map)
     ctx.fillStyle = 'rgba(232,238,252,0.72)';
     ctx.font = `700 10px ${MONO}`;
     ctx.textAlign = 'center';

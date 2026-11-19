@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Harbour City</title>
+<style>
+  :root {
+    --ink: #0a0f1a;
+    --amber: #ffb347;
+    --cyan: #6fd6ff;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #070b14;
+    color: #e8eefc;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  #scene {
+    display: block;
+    width: 100%;
+    height: 100%;
+    touch-action: none;
+    cursor: grab;
+  }
+
+  #scene:active { cursor: grabbing; }
+
+  #hud {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 2;
+  }
+
+  /* Read aloud, never shown: the status line screen readers announce. */
+  #status {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  #overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 3;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background:
+      radial-gradient(circle at 50% 42%, rgba(255, 179, 71, 0.14), transparent 55%),
+      radial-gradient(circle at 50% 108%, rgba(111, 214, 255, 0.14), transparent 60%),
+      radial-gradient(circle at 50% 45%, rgba(8, 13, 24, 0.26) 0%, rgba(7, 11, 20, 0.52) 58%, rgba(5, 8, 15, 0.8) 100%);
+    backdrop-filter: blur(1.5px) saturate(1.05);
+    -webkit-backdrop-filter: blur(1.5px) saturate(1.05);
+    transition: opacity 480ms ease, visibility 480ms ease;
+  }
+
+  #overlay.hidden {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+  }
+
+  .panel {
+    width: min(560px, 100%);
+    text-align: center;
+    padding: 40px 32px 34px;
+    border-radius: 20px;
+    border: 1px solid rgba(111, 214, 255, 0.16);
+    background: linear-gradient(180deg, rgba(12, 19, 33, 0.92), rgba(8, 13, 24, 0.96));
+    box-shadow:
+      0 30px 90px rgba(0, 0, 0, 0.6),
+      inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  }
+
+  .kicker {
+    font-size: 11px;
+    letter-spacing: 0.42em;
+    text-transform: uppercase;
+    color: rgba(111, 214, 255, 0.78);
+    margin-bottom: 18px;
+  }
+
+  h1 {
+    font-size: clamp(34px, 7vw, 62px);
+    line-height: 0.96;
+    letter-spacing: 0.06em;
+    font-weight: 800;
+    text-transform: uppercase;
+    background: linear-gradient(180deg, #fff6e6 0%, #ffca7a 55%, #ff9f3c 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    filter: drop-shadow(0 6px 24px rgba(255, 159, 60, 0.28));
+  }
+
+  .rule {
+    width: 86px;
+    height: 2px;
+    margin: 22px auto 20px;
+    background: linear-gradient(90deg, transparent, var(--amber), transparent);
+    opacity: 0.85;
+  }
+
+  .sub {
+    font-size: 14px;
+    line-height: 1.6;
+    color: rgba(232, 238, 252, 0.62);
+    max-width: 40ch;
+    margin: 0 auto 26px;
+  }
+
+  #play {
+    appearance: none;
+    border: 0;
+    cursor: pointer;
+    padding: 15px 46px;
+    border-radius: 999px;
+    font: inherit;
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: #150d02;
+    background: linear-gradient(180deg, #ffd08a, #ffab3f);
+    box-shadow: 0 12px 30px rgba(255, 159, 60, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.6);
+    transition: transform 140ms ease, box-shadow 140ms ease, filter 140ms ease;
+  }
+
+  #play:hover { transform: translateY(-1px); filter: brightness(1.06); }
+  #play:active { transform: translateY(1px) scale(0.995); }
+  #play:focus-visible { outline: 2px solid var(--cyan); outline-offset: 4px; }
+
+  .controls {
+    margin-top: 26px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 8px 18px;
+    font-size: 12px;
+    letter-spacing: 0.06em;
+    color: rgba(232, 238, 252, 0.5);
+  }
+
+  .controls span { white-space: nowrap; }
+
+  kbd {
+    display: inline-block;
+    min-width: 22px;
+    padding: 3px 6px;
+    margin-right: 5px;
+    border-radius: 5px;
+    border: 1px solid rgba(232, 238, 252, 0.22);
+    border-bottom-width: 2px;
+    background: rgba(232, 238, 252, 0.07);
+    color: rgba(232, 238, 252, 0.86);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px;
+    line-height: 1;
+  }
+
+  .hint {
+    margin-top: 16px;
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: rgba(111, 214, 255, 0.4);
+  }
+
+  .missions {
+    margin: 22px auto 0;
+    max-width: 44ch;
+    font-size: 12px;
+    line-height: 1.65;
+    color: rgba(255, 179, 71, 0.66);
+  }
+
+  .missions b {
+    display: block;
+    margin-bottom: 4px;
+    font-size: 10px;
+    letter-spacing: 0.24em;
+    text-transform: uppercase;
+    color: rgba(255, 203, 130, 0.92);
+  }
+
+  @media (max-width: 520px) {
+    .panel { padding: 30px 20px 26px; border-radius: 16px; }
+    .controls { gap: 6px 12px; font-size: 11px; }
+  }
+</style>
+</head>
+<body>
+  <canvas id="scene" aria-label="Harbour City: a dusk city you can walk through"></canvas>
+  <canvas id="hud"></canvas>
+  <p id="status" role="status" aria-live="polite"></p>
+
+  <div id="overlay">
+    <div class="panel">
+      <div class="kicker">Dusk District &middot; Sector 9</div>
+      <h1>HARBOUR CITY</h1>
+      <div class="rule"></div>
+      <p class="sub">The sun has gone down behind the towers and the avenues are full of traffic. Walk the waterfront, take a car off the kerb, and run jobs for people who pay cash and ask nothing.</p>
+      <button id="play" type="button">Play</button>
+      <div class="controls">
+        <span><kbd>WASD</kbd> move</span>
+        <span><kbd>Shift</kbd> sprint</span>
+        <span><kbd>Space</kbd> jump / brake</span>
+        <span><kbd>F</kbd> take a car</span>
+        <span><kbd>Click</kbd> fire</span>
+        <span><kbd>Drag</kbd> orbit</span>
+      </div>
+      <p class="missions">
+        <b>Four jobs, one beacon</b>
+        Hot Wire &middot; Docks Run &middot; Packages &middot; The Vault &mdash; follow the amber beam for the next one.
+        Every star you earn has to be shaken off, and 20 quiet seconds buys you one back.
+      </p>
+      <div class="hint">Click play, then drag the city to look around</div>
+    </div>
+  </div>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>

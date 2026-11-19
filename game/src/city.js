@@ -222,13 +222,14 @@ function makeAsphalt(rng) {
     ctx.stroke();
   }
 
-  // Wet sheen: vertical streaks (a tyre-worn band) plus a few long diagonal glints.
-  for (let i = 0; i < 26; i++) {
+  // Wet sheen: vertical streaks (a tyre-worn band) plus a few long diagonal glints. Kept faint
+  // in the albedo — the gloss lives in the roughness map, the brightness comes from the sky.
+  for (let i = 0; i < 14; i++) {
     const x = rng() * S;
     const w = 6 + rng() * 34;
     const g = ctx.createLinearGradient(x, 0, x + w, 0);
     g.addColorStop(0, 'rgba(0,0,0,0)');
-    g.addColorStop(0.5, `rgba(150,180,215,${0.03 + rng() * 0.05})`);
+    g.addColorStop(0.5, `rgba(150,180,215,${0.015 + rng() * 0.022})`);
     g.addColorStop(1, 'rgba(0,0,0,0)');
     ctx.fillStyle = g;
     ctx.fillRect(x, 0, w, S);
@@ -893,8 +894,8 @@ export class City {
       const material = new THREE.MeshStandardMaterial({
         map: this.facades[v].map,
         emissiveMap: this.facades[v].emissiveMap,
-        emissive: new THREE.Color(0xffc98a),
-        emissiveIntensity: 1.8,
+        emissive: new THREE.Color(0xffcf96),
+        emissiveIntensity: 3.6,
         vertexColors: true,
         roughness: 0.5,
         metalness: 0.18,
@@ -1101,9 +1102,9 @@ export class City {
       mergeGeometries(discs),
       new THREE.MeshBasicMaterial({
         map: this.textures.pool,
-        color: 0xffb877,
+        color: 0xffc48a,
         transparent: true,
-        opacity: 0.55,
+        opacity: 0.82,
         blending: THREE.AdditiveBlending,
         depthWrite: false,
         side: THREE.DoubleSide,
@@ -1116,17 +1117,18 @@ export class City {
   }
 
   /**
-   * Six real point lights for the whole city, recycled every frame onto the nearest lamp heads
+   * Eight real spotlights for the whole city, recycled every frame onto the nearest lamp heads
    * to the player. The discs and the emissive heads carry the look; these carry the actual
    * falloff on the asphalt, the kerb and the player as they walk under a lamp.
    */
-  lampLightPool(size = 6) {
+  lampLightPool(size = 8) {
     this.lampLights = [];
     for (let i = 0; i < size; i++) {
-      const light = new THREE.PointLight(0xffb374, 0, 26, 2);
+      const light = new THREE.SpotLight(0xffbb7d, 0, 34, 0.62, 0.55, 1.5);
       light.castShadow = false;
       light.name = `lamp-light-${i}`;
       this.group.add(light);
+      this.group.add(light.target);
       this.lampLights.push(light);
     }
     this.updateLampLights(new THREE.Vector3());
@@ -1138,7 +1140,7 @@ export class City {
     const px = playerPosition.x;
     const pz = playerPosition.z;
 
-    // Keep the six smallest squared distances without sorting the whole list.
+    // Keep the smallest squared distances without sorting the whole list.
     const best = [];
     for (let i = 0; i < this.lampHeads.length; i++) {
       const head = this.lampHeads[i];
@@ -1162,9 +1164,12 @@ export class City {
         continue;
       }
       light.position.copy(pick.head);
+      // The cone points straight down at the road, so the pool lands under the head.
+      light.target.position.set(pick.head.x, 0, pick.head.z);
+      light.target.updateMatrixWorld();
       // Fade out towards the edge of the pool so a lamp swapping in never pops.
-      const fade = 1 - THREE.MathUtils.clamp((Math.sqrt(pick.d2) - 70) / 40, 0, 1);
-      light.intensity = 24 * fade * fade;
+      const fade = 1 - THREE.MathUtils.clamp((Math.sqrt(pick.d2) - 66) / 44, 0, 1);
+      light.intensity = 260 * fade * fade;
     }
   }
 
@@ -1477,11 +1482,11 @@ export class City {
       disc.renderOrder = 5;
       mesh.add(disc);
 
-      // Lay the car out on a random lane, heading one way along that road.
+      // Lay the car out at the kerb on a random road, heading one way along it.
       const along = this.random() > 0.5;
       const road = ROAD_COORDS[Math.floor(this.random() * ROAD_COORDS.length)];
       const dir = this.random() > 0.5 ? 1 : -1;
-      const lane = (this.random() > 0.5 ? 1 : -1) * ROAD_WIDTH * 0.25;
+      const lane = dir * (ROAD_WIDTH / 2 - 1.3);
       const span = BOUNDS * 2 + 70;
       const start = -BOUNDS - 35 + this.random() * span;
 
@@ -1490,7 +1495,7 @@ export class City {
         along,
         road: road + lane,
         dir,
-        speed: 5.5 + this.random() * 8,
+        speed: 0, // scenery: parked at the kerb, the moving fleet lives in vehicles.js
         t: start,
       };
       this.#placeCar(car);
@@ -1577,6 +1582,9 @@ export class City {
    * thing — the cheap stand-in for a bloom pass.
    */
   windowGlow() {
+    // Two layers. The static one is one draw call of dim far specks and lamp halos; the bright
+    // one is a 60-point bloom cloud that is refilled with the emissives nearest the player, so
+    // the windows close enough to read get a halo and the rest rely on their emissive maps.
     const positions = [];
     const colors = [];
     const push = (x, y, z, color, scale = 1) => {
@@ -1584,6 +1592,7 @@ export class City {
       colors.push(color.r * scale, color.g * scale, color.b * scale);
     };
 
+    this.emissiveSpots = [];
     const white = new THREE.Color(1, 1, 1);
 
     for (const b of this.buildings) {
@@ -1591,7 +1600,7 @@ export class City {
       const lit = this.facades[b.variant].lit;
       if (!lit.length) continue;
 
-      const samples = 3 + Math.floor(this.random() * 4);
+      const samples = 4 + Math.floor(this.random() * 5);
       const uReps = Math.max(1, Math.round(b.uReps));
       for (let i = 0; i < samples; i++) {
         const win = lit[Math.floor(this.random() * lit.length)];
@@ -1599,26 +1608,34 @@ export class City {
         if (y > b.height - 1.5 || y < 1.2) continue;
         const u = (Math.floor(this.random() * uReps) + win.u) / uReps;
         const c = new THREE.Color(win.color).multiplyScalar(0.35 + win.tier * 0.65);
+        let x;
+        let z;
         switch (Math.floor(this.random() * 4)) {
           case 0:
-            push(b.x1 + 0.09, y, b.z0 + u * b.depth, c);
+            x = b.x1 + 0.12;
+            z = b.z0 + u * b.depth;
             break;
           case 1:
-            push(b.x0 - 0.09, y, b.z0 + u * b.depth, c);
+            x = b.x0 - 0.12;
+            z = b.z0 + u * b.depth;
             break;
           case 2:
-            push(b.x0 + u * b.width, y, b.z1 + 0.09, c);
+            x = b.x0 + u * b.width;
+            z = b.z1 + 0.12;
             break;
           default:
-            push(b.x0 + u * b.width, y, b.z0 - 0.09, c);
+            x = b.x0 + u * b.width;
+            z = b.z0 - 0.12;
             break;
         }
+        this.emissiveSpots.push({ x, y, z, color: c, scale: 0.9 + win.tier * 0.9 });
       }
     }
 
-    // Lamp halos: the emissive heads alone read as flat dots from a distance.
+    // Lamp heads are emissives too: the bright layer picks up the nearest posts.
     for (const head of this.lampHeads) {
-      push(head.x, head.y - 0.05, head.z, white, 0.85);
+      this.emissiveSpots.push({ x: head.x, y: head.y - 0.05, z: head.z, color: new THREE.Color(0xffd39a), scale: 1.1 });
+      push(head.x, head.y - 0.05, head.z, new THREE.Color(0xffd39a), 0.5);
     }
 
     // Distant skyline specks, dimmer so they stay behind the fog.
@@ -1634,10 +1651,10 @@ export class City {
       geometry,
       new THREE.PointsMaterial({
         map: this.textures.glow,
-        size: 2.6,
+        size: 2.2,
         sizeAttenuation: true,
         transparent: true,
-        opacity: 0.62,
+        opacity: 0.5,
         blending: THREE.AdditiveBlending,
         depthWrite: false,
         vertexColors: true,
@@ -1648,13 +1665,110 @@ export class City {
     points.renderOrder = 6;
     this.detail.glow = positions.length / 3;
     this.group.add(points);
+
+    // --- the bloom layer: exactly 60 additive sprites, refilled with the nearest emissives ----
+    this.bloomCount = 60;
+    const bloomPositions = new Float32Array(this.bloomCount * 3);
+    const bloomColors = new Float32Array(this.bloomCount * 3);
+    const bloomGeometry = new THREE.BufferGeometry();
+    bloomGeometry.setAttribute('position', new THREE.BufferAttribute(bloomPositions, 3));
+    bloomGeometry.setAttribute('color', new THREE.BufferAttribute(bloomColors, 3));
+    bloomGeometry.setDrawRange(0, this.bloomCount);
+
+    const bloom = new THREE.Points(
+      bloomGeometry,
+      new THREE.PointsMaterial({
+        map: this.textures.glow,
+        size: 3.4,
+        sizeAttenuation: true,
+        transparent: true,
+        opacity: 0.55,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        vertexColors: true,
+        fog: true,
+      }),
+    );
+    bloom.name = 'window-bloom';
+    bloom.renderOrder = 7;
+    bloom.frustumCulled = false;
+    this.bloom = bloom;
+    this.bloomPositions = bloomPositions;
+    this.bloomColors = bloomColors;
+    this.bloomTimer = 0;
+    this.group.add(bloom);
+    this.updateBloom(new THREE.Vector3());
   }
 
-  /** Per-frame work: traffic, and recycling the lamp light pool onto the nearest heads. */
+  /**
+   * Refill the bloom cloud with the 60 emissives nearest the viewer. Called a few times a second:
+   * a partial selection over a couple of thousand points is cheap, and re-sorting the whole city
+   * every frame is not.
+   */
+  updateBloom(playerPosition) {
+    if (!this.bloom || !this.emissiveSpots) return;
+    const px = playerPosition.x;
+    const py = playerPosition.y;
+    const pz = playerPosition.z;
+    const N = this.bloomCount;
+    const picked = [];
+
+    for (const spot of this.emissiveSpots) {
+      const dx = spot.x - px;
+      const dy = spot.y - py;
+      const dz = spot.z - pz;
+      const d2 = dx * dx + dy * dy + dz * dz;
+      if (picked.length < N) {
+        picked.push({ d2, spot });
+        if (picked.length === N) picked.sort((a, b) => a.d2 - b.d2);
+      } else if (d2 < picked[N - 1].d2) {
+        picked[N - 1] = { d2, spot };
+        let i = N - 1;
+        while (i > 0 && picked[i - 1].d2 > picked[i].d2) {
+          const tmp = picked[i - 1];
+          picked[i - 1] = picked[i];
+          picked[i] = tmp;
+          i--;
+        }
+      }
+    }
+
+    const pos = this.bloomPositions;
+    const col = this.bloomColors;
+    for (let i = 0; i < N; i++) {
+      const pick = picked[i];
+      if (!pick) {
+        pos[i * 3] = 0;
+        pos[i * 3 + 1] = -500;
+        pos[i * 3 + 2] = 0;
+        continue;
+      }
+      pos[i * 3] = pick.spot.x;
+      pos[i * 3 + 1] = pick.spot.y;
+      pos[i * 3 + 2] = pick.spot.z;
+      // Nearer sprites are brighter, which reads as falloff without a real bloom pass.
+      const fade = 1 - THREE.MathUtils.clamp((Math.sqrt(pick.d2) - 18) / 60, 0, 1);
+      const k = pick.spot.scale * (0.35 + fade * 0.9);
+      col[i * 3] = pick.spot.color.r * k;
+      col[i * 3 + 1] = pick.spot.color.g * k;
+      col[i * 3 + 2] = pick.spot.color.b * k;
+    }
+    this.bloom.geometry.getAttribute('position').needsUpdate = true;
+    this.bloom.geometry.getAttribute('color').needsUpdate = true;
+  }
+
+  /** Per-frame work: recycling the lamp pool and refreshing the bloom cloud a few times a second. */
   update(dt, playerPosition) {
     this.time += dt;
     this.updateCars(dt);
-    if (playerPosition) this.updateLampLights(playerPosition);
+    if (playerPosition) {
+      this.updateLampLights(playerPosition);
+      this.bloomTimer = (this.bloomTimer || 0) + dt;
+      if (this.bloomTimer >= 0.2) {
+        this.bloomTimer = 0;
+        this.updateBloom(playerPosition);
+      }
+    }
   }
 
   // -- walkable ground -------------------------------------------------------------------
